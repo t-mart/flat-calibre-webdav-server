@@ -193,6 +193,7 @@ implements. Two dry-runs in a row should plan no changes the second time.
 
 ## Companion project
 
-The client is a separate KOReader plugin. The shared contract is exactly two
+The client is a separate KOReader plugin called
+[koda](https://github.com/t-mart/koda). The shared contract is exactly two
 things: the flat naming scheme, and `getetag` as the change-detection key.
 Everything else on either side can change independently.
