@@ -1,0 +1,70 @@
+# Builds the image and pushes it to this Forgejo instance's container registry on
+# every push to master, overwriting the `latest` tag.
+#
+# Secrets (repository settings -> Actions -> Secrets):
+#   REGISTRY_USERNAME  Forgejo account to push as
+#   REGISTRY_TOKEN     that account's access token, with `write:package` scope
+#
+# Variables (repository settings -> Actions -> Variables), all optional:
+#   REGISTRY    registry host, defaults to the host this repository is served from
+#   IMAGE_NAME  path under the registry, defaults to `owner/repo` lowercased
+#   PLATFORMS   build platforms, defaults to `linux/amd64`
+
+name: publish-container
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  publish:
+    # Label of a runner that can reach a Docker daemon and has the docker CLI.
+    runs-on: docker
+
+    steps:
+      - name: Check out
+        uses: https://github.com/actions/checkout@v4
+
+      - name: Resolve image reference
+        id: image
+        env:
+          REGISTRY: ${{ vars.REGISTRY }}
+          IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          host="${REGISTRY:-$(printf '%s' "$SERVER_URL" | sed --expression 's|^https\?://||')}"
+          name="$(printf '%s' "${IMAGE_NAME:-$REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          echo "registry=$host" >> "$GITHUB_OUTPUT"
+          echo "reference=$host/$name" >> "$GITHUB_OUTPUT"
+          echo "revision=$(printf '%s' "$GITHUB_SHA" | cut --characters=1-12)" >> "$GITHUB_OUTPUT"
+          echo "created=$(date --utc --iso-8601=seconds)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: https://github.com/docker/setup-buildx-action@v3
+
+      - name: Log in to the registry
+        uses: https://github.com/docker/login-action@v3
+        with:
+          registry: ${{ steps.image.outputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Build and push
+        uses: https://github.com/docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: ${{ vars.PLATFORMS || 'linux/amd64' }}
+          tags: |
+            ${{ steps.image.outputs.reference }}:latest
+            ${{ steps.image.outputs.reference }}:${{ steps.image.outputs.revision }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.image.outputs.created }}
+          # Forgejo's registry rejects the attestation manifests buildx attaches
+          # by default, so push a plain image manifest instead.
+          provenance: false

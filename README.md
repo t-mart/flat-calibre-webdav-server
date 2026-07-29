@@ -115,6 +115,12 @@ docker build --tag fcws:latest .
 docker run --detach --name fcws --publish 8080:8080 --restart unless-stopped --user 1000:1000 --volume /my/ebooks:/library:ro --env FCWS_USERNAME=someuser --env FCWS_PASSWORD=somepassword fcws:latest
 ```
 
+Pushes to `master` publish the image to the Forgejo instance's container
+registry (see [.forgejo/workflows/publish-container.yml](.forgejo/workflows/publish-container.yml)),
+so the build step can be skipped in favor of pulling
+`<forgejo-host>/<owner>/flat-calibre-webdav-server:latest`. Each push also
+leaves behind an immutable tag of the short commit hash.
+
 Mount the library `:ro` so read-only access is enforced by the filesystem and
 not merely in code.
 
