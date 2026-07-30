@@ -1,0 +1,13 @@
+{
+  "yaml.disableSchemaDetection": [
+    "**/.github/workflows/*.yml",
+    "**/.github/workflows/*.yaml",
+    "**/.gitea/workflows/*.yml",
+    "**/.gitea/workflows/*.yaml",
+    "**/.forgejo/workflows/*.yml",
+    "**/.forgejo/workflows/*.yaml"
+  ],
+  "yaml.schemas": {
+    "https://www.schemastore.org/github-action.json": "file:///home/tim/code/flat-calibre-webdav-server/.forgejo/workflows/publish-docker-image.yml"
+  }
+}

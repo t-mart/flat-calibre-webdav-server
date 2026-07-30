@@ -24,12 +24,12 @@ over WebDAV:
   Bolaño, Roberto & Wimmer, Natasha - 2666 01 - 2666.epub
 ```
 
-The intended client is a KOReader plugin that mirrors this collection into a
-local folder on a Kobo.
+The intended client is [folder-sync](https://github.com/t-mart/folder-sync), a
+KOReader plugin that mirrors this collection into a local folder on a Kobo.
 
 Flat is deliberate: KOReader shows cover thumbnails at whatever level you are
-browsing and its search covers the tree anyway, so a flat root is the most
-usable layout on-device.
+browsing. It's the most aesthetically pleasing to see a single page of covers.
+If there are too many pages, you can always search.
 
 ## How it works
 
@@ -116,7 +116,8 @@ docker run --detach --name fcws --publish 8080:8080 --restart unless-stopped --u
 ```
 
 Pushes to `master` publish the image to the Forgejo instance's container
-registry (see [.forgejo/workflows/publish-container.yml](.forgejo/workflows/publish-container.yml)),
+registry (see
+[.forgejo/workflows/publish-container.yml](.forgejo/workflows/publish-container.yml)),
 so the build step can be skipped in favor of pulling
 `<forgejo-host>/<owner>/flat-calibre-webdav-server:latest`. Each push also
 leaves behind an immutable tag of the short commit hash.
@@ -200,6 +201,6 @@ implements. Two dry-runs in a row should plan no changes the second time.
 ## Companion project
 
 The client is a separate KOReader plugin called
-[koda](https://github.com/t-mart/koda). The shared contract is exactly two
-things: the flat naming scheme, and `getetag` as the change-detection key.
-Everything else on either side can change independently.
+[folder-sync](https://github.com/t-mart/folder-sync). The shared contract is
+exactly two things: the flat naming scheme, and `getetag` as the
+change-detection key. Everything else on either side can change independently.
