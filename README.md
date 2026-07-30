@@ -24,7 +24,7 @@ over WebDAV:
   Bolaño, Roberto & Wimmer, Natasha - 2666 01 - 2666.epub
 ```
 
-The intended client is [folder-sync](https://github.com/t-mart/folder-sync), a
+The intended client is [foldersync](https://github.com/t-mart/foldersync), a
 KOReader plugin that mirrors this collection into a local folder on a Kobo.
 
 Flat is deliberate: KOReader shows cover thumbnails at whatever level you are
@@ -201,6 +201,6 @@ implements. Two dry-runs in a row should plan no changes the second time.
 ## Companion project
 
 The client is a separate KOReader plugin called
-[folder-sync](https://github.com/t-mart/folder-sync). The shared contract is
+[foldersync](https://github.com/t-mart/foldersync). The shared contract is
 exactly two things: the flat naming scheme, and `getetag` as the
 change-detection key. Everything else on either side can change independently.
