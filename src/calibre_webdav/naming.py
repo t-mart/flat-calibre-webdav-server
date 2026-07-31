@@ -1,27 +1,47 @@
-"""Flat filename generation.
+"""Rendering a book to a relative path from an operator-supplied template.
 
-The naming scheme is a contract shared with the KOReader client plugin:
+The template syntax is Calibre's own save-template shape:
 
-    with series:     {author_sort} - {series} {index} - {title}.{ext}
-    without series:  {author_sort} - {title}.{ext}
+    {field}                  the field's value
+    {field:|prefix|suffix}   prefix + value + suffix, or nothing at all when the
+                             field is empty
 
-Everything here is pure: no filesystem, no database. Names must be legal on
-FAT32 (the Kobo's internal storage) while preserving non-ASCII intact.
+`/` in a template separates path components, so the depth of the served tree is
+the operator's choice. Field values are sanitized before substitution, which is
+what makes it impossible for a title like `AC/DC` to invent a path component.
+
+Everything here is pure: no filesystem, no database.
 """
 
+import re
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
-from .config import ILLEGAL_FILENAME_CHARS
+# Illegal in a rendered component whatever the target filesystem is: `/` would
+# silently split one component into two, and control characters have no business
+# in a filename anywhere. Always replaced, even when FAT32 handling is off.
+ALWAYS_ILLEGAL_CHARS = frozenset("/")
+
+# Illegal on FAT32 and Windows, perfectly legal on ext4. Replaced only when a
+# replacement string is configured.
+FAT32_ILLEGAL_CHARS = frozenset(':*?"<>|\\')
+
+# The replacement for the always-illegal set when FAT32 handling is off, since
+# there is no operator-supplied string to fall back on.
+_HARD_REPLACEMENT = "_"
 
 # Characters FAT32 forbids at the very end of a name. A dot or space mid-name is
 # fine; a trailing one makes the write fail on-device.
 _TRAILING_JUNK = " ."
 
-# If the fixed parts of a name leave less room than this for the title, we stop
-# trying to preserve the structure and hard-truncate the whole stem instead.
-_MIN_TITLE_BUDGET = 8
+# `{field}` or `{field:|prefix|suffix}`. Prefix and suffix are literal text and
+# may not themselves contain braces or the `|` that delimits them.
+_PLACEHOLDER = re.compile(r"\{(\w+)(?::\|([^|{}]*)\|([^|{}]*))?\}")
+
+
+class TemplateError(ValueError):
+    """Raised when a path template cannot be rendered as written."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,8 +52,55 @@ class BookNaming:
     author_sort: str
     title: str
     extension: str
+    title_sort: str | None = None
     series: str | None = None
     series_index: float = 1.0
+    year: int | None = None
+
+
+def format_series_index(value: float) -> str:
+    """Render a series index so a series sorts lexicographically into order.
+
+    Zero-pads the integer part to two digits and drops a trailing `.0`, so
+    `1.0` -> `01` and `2.5` -> `02.5`. Integer parts wider than two digits are
+    left alone rather than truncated.
+    """
+    text = f"{value:.4f}".rstrip("0").rstrip(".")
+    integer_part, _, fraction = text.partition(".")
+    try:
+        padded = f"{int(integer_part):02d}"
+    except ValueError:
+        padded = integer_part
+    return f"{padded}.{fraction}" if fraction else padded
+
+
+# The template vocabulary. Being the single source of truth for both validation
+# and rendering, an unknown field can only be a typo in the template.
+FIELDS: Mapping[str, Callable[[BookNaming], str]] = {
+    "author_sort": lambda book: book.author_sort,
+    "title": lambda book: book.title,
+    "title_sort": lambda book: book.title_sort or book.title,
+    "series": lambda book: book.series or "",
+    # An index without a series is meaningless, and Calibre defaults it to 1.0
+    # for every standalone book, so it renders empty unless there is a series.
+    "series_index": lambda book: format_series_index(book.series_index) if book.series else "",
+    "id": lambda book: str(book.book_id),
+    "year": lambda book: str(book.year) if book.year else "",
+    "ext": lambda book: book.extension.casefold().lstrip("."),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class Placeholder:
+    """One `{field}` or `{field:|prefix|suffix}` in a parsed template."""
+
+    field: str
+    prefix: str = ""
+    suffix: str = ""
+
+
+# A parsed template: literal text interleaved with placeholders.
+PathTemplate = tuple[str | Placeholder, ...]
 
 
 def utf16_length(text: str) -> int:
@@ -56,102 +123,169 @@ def truncate_utf16(text: str, limit: int) -> str:
     return "".join(kept)
 
 
-def _is_illegal(char: str) -> bool:
-    """Illegal on FAT32, or a control character that has no business in a name."""
-    return char in ILLEGAL_FILENAME_CHARS or ord(char) < 0x20 or ord(char) == 0x7F
+def _illegal_chars(replacement: str | None) -> frozenset[str]:
+    """The characters replaced under a given FAT32 setting."""
+    if replacement is None:
+        return ALWAYS_ILLEGAL_CHARS
+    return ALWAYS_ILLEGAL_CHARS | FAT32_ILLEGAL_CHARS
 
 
-def sanitize_component(text: str, replacement: str = "_") -> str:
-    """Make one name component FAT32-legal, leaving non-ASCII untouched.
+def sanitize_component(text: str, replacement: str | None = _HARD_REPLACEMENT) -> str:
+    """Make one field value safe to drop into a path component.
 
-    Mirrors Calibre's own convention of substituting `_` for illegal characters,
-    so `Dune: House Atreides` becomes `Dune_ House Atreides`.
+    A `replacement` of None means the target is not FAT32: only the
+    always-illegal set is substituted, and with `_`, since there is no
+    configured string to use. Non-ASCII is left untouched either way.
     """
-    swapped = "".join(replacement if _is_illegal(char) else char for char in text)
+    illegal = _illegal_chars(replacement)
+    substitute = _HARD_REPLACEMENT if replacement is None else replacement
+    swapped = "".join(
+        substitute if char in illegal or ord(char) < 0x20 or ord(char) == 0x7F else char
+        for char in text
+    )
     # Collapse whitespace runs so substitution cannot leave odd gaps, and so the
     # result is stable regardless of stray spacing in the metadata.
-    return " ".join(swapped.split())
+    collapsed = " ".join(swapped.split())
+    # A value of bare dots would mean "this directory" or "the parent one".
+    return _HARD_REPLACEMENT * len(collapsed) if collapsed in {".", ".."} else collapsed
 
 
-def format_series_index(value: float) -> str:
-    """Render a series index so a series sorts lexicographically into order.
+def parse_template(text: str, *, replacement: str | None = _HARD_REPLACEMENT) -> PathTemplate:
+    """Parse a template, rejecting anything that cannot render a legal path.
 
-    Zero-pads the integer part to two digits and drops a trailing `.0`, so
-    `1.0` -> `01` and `2.5` -> `02.5`. Integer parts wider than two digits are
-    left alone rather than truncated.
+    `replacement` is consulted only to decide whether the template's own literal
+    text has to be FAT32-legal: an operator who writes a `:` into a template
+    aimed at a Kobo wants to hear about it at startup rather than discover
+    unwritable files on the device later.
     """
-    text = f"{value:.4f}".rstrip("0").rstrip(".")
-    integer_part, _, fraction = text.partition(".")
-    try:
-        padded = f"{int(integer_part):02d}"
-    except ValueError:
-        padded = integer_part
-    return f"{padded}.{fraction}" if fraction else padded
+    nodes: list[str | Placeholder] = []
+    position = 0
+    for match in _PLACEHOLDER.finditer(text):
+        nodes.append(text[position : match.start()])
+        field, prefix, suffix = match.group(1), match.group(2) or "", match.group(3) or ""
+        if field not in FIELDS:
+            raise TemplateError(
+                f"unknown template field {{{field}}}; known fields are {', '.join(sorted(FIELDS))}"
+            )
+        nodes.append(Placeholder(field, prefix, suffix))
+        position = match.end()
+    nodes.append(text[position:])
+
+    template = tuple(node for node in nodes if node != "")
+    _validate(template, replacement=replacement)
+    return template
 
 
-def build_flat_name(
+def _validate(template: PathTemplate, *, replacement: str | None) -> None:
+    literals = [node for node in template if isinstance(node, str)]
+    literals += [node.prefix + node.suffix for node in template if isinstance(node, Placeholder)]
+    # `/` is the separator and so is legal in the template's own text, whatever
+    # it would mean inside a field value.
+    illegal = _illegal_chars(replacement) - ALWAYS_ILLEGAL_CHARS
+
+    for literal in literals:
+        stray = next((char for char in literal if char in "{}"), None)
+        if stray is not None:
+            raise TemplateError(f"stray {stray!r} in the template; a placeholder is malformed")
+        offender = next((char for char in literal if char in illegal), None)
+        if offender is not None:
+            raise TemplateError(
+                f"the template contains {offender!r}, which is illegal in a FAT32 filename; "
+                "set CW_FAT32_REPLACEMENT=false if the target is not FAT32"
+            )
+
+    if not any(isinstance(node, Placeholder) and node.field == "ext" for node in template):
+        raise TemplateError("the template must contain {ext} or the files have no extension")
+
+    # A literal `.` or `..` between two separators would be real path traversal
+    # rather than a naming quirk, so it is refused outright.
+    skeleton = "".join(
+        node if isinstance(node, str) else f"{node.prefix}\x00{node.suffix}" for node in template
+    )
+    for segment in skeleton.split("/"):
+        if segment and set(segment) <= set("."):
+            raise TemplateError(f"the template has a {segment!r} path segment")
+
+
+def render_path(
     book: BookNaming,
+    template: PathTemplate,
     *,
     max_length: int,
-    replacement: str = "_",
+    replacement: str | None = _HARD_REPLACEMENT,
     include_id: bool = False,
-) -> str:
-    """Render one book's flat filename.
+) -> tuple[str, ...]:
+    """Render one book to its relative path, as a tuple of path components.
 
-    Only the title is ever truncated; the extension, series index, and the
-    collision-disambiguating id suffix are always preserved in full.
+    Components that render empty are dropped, which is how an optional series
+    directory collapses. Each surviving component is capped independently at
+    `max_length`; on the last one the extension and the collision-disambiguating
+    id suffix are preserved and only the stem is truncated.
     """
-    author = sanitize_component(book.author_sort, replacement) or "Unknown"
-    title = sanitize_component(book.title, replacement) or f"book {book.book_id}"
-    extension = f".{book.extension.casefold().lstrip('.')}"
-    suffix = f" ({book.book_id})" if include_id else ""
+    rendered = "".join(_render_node(node, book, replacement) for node in template)
+    components = [component for component in rendered.split("/") if component] or [""]
 
-    if book.series:
-        series = sanitize_component(book.series, replacement)
-        index = format_series_index(book.series_index)
-        prefix = f"{author} - {series} {index} - " if series else f"{author} - "
-    else:
-        prefix = f"{author} - "
+    extension = f".{FIELDS['ext'](book)}"
+    tail = extension if components[-1].endswith(extension) else ""
+    if include_id:
+        components[-1] = f"{components[-1].removesuffix(tail)} ({book.book_id}){tail}"
+        tail = f" ({book.book_id}){tail}"
 
-    tail_cost = utf16_length(suffix) + utf16_length(extension)
-    title_budget = max_length - utf16_length(prefix) - tail_cost
+    fitted = [_fit(component, max_length, replacement=replacement) for component in components[:-1]]
+    fitted.append(_fit(components[-1], max_length, tail=tail, replacement=replacement))
 
-    if title_budget >= _MIN_TITLE_BUDGET:
-        stem = prefix + truncate_utf16(title, title_budget)
-    else:
-        # Pathological case: the fixed parts alone blow the budget. Preserve the
-        # suffix and extension and hard-truncate everything else.
-        stem = truncate_utf16(prefix + title, max_length - tail_cost)
-
-    stem = stem.rstrip(_TRAILING_JUNK)
-    if not stem:
-        stem = f"book {book.book_id}"
-    return f"{stem}{suffix}{extension}"
+    fallback = f"book {book.book_id}{tail}"
+    return tuple(component or fallback for component in fitted)
 
 
-def assign_flat_names(
+def _render_node(node: str | Placeholder, book: BookNaming, replacement: str | None) -> str:
+    if isinstance(node, str):
+        return node
+    value = sanitize_component(FIELDS[node.field](book), replacement)
+    return f"{node.prefix}{value}{node.suffix}" if value else ""
+
+
+def _fit(component: str, limit: int, *, replacement: str | None, tail: str = "") -> str:
+    """Cap one component, keeping `tail` intact and truncating only the stem."""
+    stem = component.removesuffix(tail)
+    if utf16_length(component) > limit:
+        stem = truncate_utf16(stem, limit - utf16_length(tail))
+    if replacement is not None:
+        stem = stem.rstrip(_TRAILING_JUNK)
+    return f"{stem}{tail}" if stem else ""
+
+
+def assign_paths(
     books: Iterable[BookNaming],
+    template: PathTemplate,
     *,
     max_length: int,
-    replacement: str = "_",
-) -> Mapping[int, str]:
-    """Map book id -> flat name, disambiguating only the names that collide.
+    replacement: str | None = _HARD_REPLACEMENT,
+) -> Mapping[int, tuple[str, ...]]:
+    """Map book id -> path components, disambiguating only the paths that collide.
 
     Collision detection is case-insensitive because the destination filesystem
-    is: two names differing only in case are distinct over WebDAV but would
-    clobber each other once mirrored onto the Kobo's FAT32 storage.
+    may be: two paths differing only in case are distinct over WebDAV but would
+    clobber each other once mirrored onto a Kobo's FAT32 storage.
     """
     books = list(books)
-    plain = {
-        book.book_id: build_flat_name(book, max_length=max_length, replacement=replacement)
-        for book in books
-    }
-    taken = Counter(name.casefold() for name in plain.values())
+
+    def render(book: BookNaming, *, include_id: bool) -> tuple[str, ...]:
+        return render_path(
+            book, template, max_length=max_length, replacement=replacement, include_id=include_id
+        )
+
+    plain = {book.book_id: render(book, include_id=False) for book in books}
+    taken = Counter(_folded(path) for path in plain.values())
     return {
         book.book_id: (
-            build_flat_name(book, max_length=max_length, replacement=replacement, include_id=True)
-            if taken[plain[book.book_id].casefold()] > 1
+            render(book, include_id=True)
+            if taken[_folded(plain[book.book_id])] > 1
             else plain[book.book_id]
         )
         for book in books
     }
+
+
+def _folded(path: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(component.casefold() for component in path)

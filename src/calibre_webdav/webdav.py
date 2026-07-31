@@ -1,8 +1,7 @@
 """The read-only WebDAV subset this server actually needs.
 
-Scope is deliberately small: OPTIONS, PROPFIND at Depth 0 and 1, GET and HEAD.
-There is no PUT, DELETE, MKCOL, MOVE, COPY, LOCK, UNLOCK or PROPPATCH, and no
-nesting to recurse into, because the collection is flat.
+Scope is deliberately small: OPTIONS, PROPFIND, GET and HEAD. There is no PUT,
+DELETE, MKCOL, MOVE, COPY, LOCK, UNLOCK or PROPPATCH.
 
 Everything here is pure protocol: building 207 Multi-Status bodies and reading
 PROPFIND request bodies. Nothing in this module knows about Calibre.
@@ -37,6 +36,9 @@ _STATUS_NOT_FOUND = "HTTP/1.1 404 Not Found"
 # The methods this server answers. Anything else gets a 405 from the router,
 # which also emits the Allow header listing these.
 ALLOWED_METHODS = ("OPTIONS", "HEAD", "GET", "PROPFIND")
+
+# 0 and 1 are the counts RFC 4918 allows; "infinity" is the rest of the subtree.
+type Depth = Literal[0, 1, "infinity"]
 
 
 def qname(local: str) -> str:
@@ -100,14 +102,18 @@ def content_type_for(name: str) -> str:
     return mimetypes.guess_type(name)[0] or _DEFAULT_CONTENT_TYPE
 
 
-def href_for(name: str | None = None) -> str:
-    """Percent-encode a flat name into an href.
+def href_for(path: str = "", *, is_collection: bool = False) -> str:
+    """Percent-encode a relative path into an absolute href.
 
-    `safe=""` because these names carry commas, spaces, colons-turned-underscores
-    and non-ASCII, and every one of them has to survive the round trip back as a
-    request path.
+    Each component is encoded with `safe=""` because these names carry commas,
+    spaces, colons-turned-underscores and non-ASCII, and every one of them has
+    to survive the round trip back as a request path. The separators are added
+    afterwards so they stay separators.
     """
-    return "/" if name is None else "/" + quote(name, safe="")
+    if not path:
+        return "/"
+    encoded = "/".join(quote(component, safe="") for component in path.split("/"))
+    return f"/{encoded}/" if is_collection else f"/{encoded}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,16 +125,29 @@ class DavResource:
     properties: dict[str, str]
 
 
-def collection_resource(last_modified: float | None) -> DavResource:
-    properties = {"displayname": "/"}
+def display_name(path: str) -> str:
+    """The last component of a path, or `/` for the root collection."""
+    return path.rpartition("/")[2] or "/"
+
+
+def collection_resource(path: str, last_modified: float | None) -> DavResource:
+    """A directory. It exists only in the index; nothing is stat'ed for it.
+
+    Collections have no size and no etag of their own, and their last-modified
+    is metadata.db's: the whole tree is derived from that one file.
+    """
+    properties = {"displayname": display_name(path)}
     if last_modified is not None:
         properties["getlastmodified"] = formatdate(last_modified, usegmt=True)
-    return DavResource(href=href_for(), is_collection=True, properties=properties)
-
-
-def file_resource(name: str, facts: FileFacts) -> DavResource:
     return DavResource(
-        href=href_for(name),
+        href=href_for(path, is_collection=True), is_collection=True, properties=properties
+    )
+
+
+def file_resource(path: str, facts: FileFacts) -> DavResource:
+    name = display_name(path)
+    return DavResource(
+        href=href_for(path),
         is_collection=False,
         properties={
             "displayname": name,
@@ -177,14 +196,17 @@ def parse_propfind(body: bytes) -> PropRequest:
     return PropRequest(mode="prop", names=tuple(child.tag for child in prop))
 
 
-def parse_depth(header: str | None) -> Literal[0, 1]:
-    """Interpret the Depth header.
+def parse_depth(header: str | None) -> Depth:
+    """Interpret the Depth header, defaulting to infinity as RFC 4918 says.
 
-    The tree is one level deep, so `infinity` is indistinguishable from 1 and is
-    accepted rather than refused. RFC 4918 makes infinity the default.
+    Infinity is answered rather than refused: the whole tree is already in
+    memory, so a recursive listing costs no more than the flat one this server
+    used to serve from its root.
     """
     value = (header or "infinity").strip().casefold()
-    return 0 if value == "0" else 1
+    if value == "0":
+        return 0
+    return 1 if value == "1" else "infinity"
 
 
 def _resolve_properties(resource: DavResource, request: PropRequest) -> tuple[list[str], list[str]]:

@@ -78,13 +78,39 @@ class TestParsing:
 
     def test_replacement_must_itself_be_legal(self):
         with pytest.raises(ConfigError, match="illegal"):
-            config(CW_SANITIZE_REPLACEMENT="/")
+            config(CW_FAT32_REPLACEMENT="/")
 
     def test_replacement_preserves_significant_whitespace(self):
-        assert config(CW_SANITIZE_REPLACEMENT=" - ").sanitize_replacement == " - "
+        assert config(CW_FAT32_REPLACEMENT=" - ").fat32_replacement == " - "
+
+    @pytest.mark.parametrize("value", ["false", "FALSE", "no", "off", "0"])
+    def test_fat32_handling_can_be_turned_off(self, value):
+        assert config(CW_FAT32_REPLACEMENT=value).fat32_replacement is None
 
     def test_password_whitespace_is_preserved(self):
         assert config(CW_PASSWORD=" spaced ").password == " spaced "
+
+
+class TestPathTemplate:
+    def test_the_default_is_parsed(self):
+        assert config().path_template
+
+    def test_a_broken_template_is_reported_against_its_variable(self):
+        with pytest.raises(ConfigError, match="CW_PATH_TEMPLATE"):
+            config(CW_PATH_TEMPLATE="{narrator}.{ext}")
+
+    def test_a_template_missing_the_extension_is_rejected(self):
+        with pytest.raises(ConfigError, match="must contain"):
+            config(CW_PATH_TEMPLATE="{author_sort}/{title}")
+
+    def test_a_fat32_illegal_template_is_rejected(self):
+        with pytest.raises(ConfigError, match="illegal in a FAT32 filename"):
+            config(CW_PATH_TEMPLATE="{author_sort}: {title}.{ext}")
+
+    def test_the_same_template_is_accepted_once_fat32_is_off(self):
+        assert config(
+            CW_PATH_TEMPLATE="{author_sort}: {title}.{ext}", CW_FAT32_REPLACEMENT="false"
+        ).path_template
 
 
 class TestValidate:

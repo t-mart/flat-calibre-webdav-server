@@ -4,6 +4,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
 
 import anyio.to_thread
 from starlette.applications import Starlette
@@ -76,59 +77,67 @@ async def _propfind_response(request: Request, resources_factory) -> Response:
     )
 
 
-def _list_members(index: LibraryIndex) -> list:
-    """Stat every book in the index. Blocking, so it runs in a worker thread."""
+def _list_members(index: LibraryIndex, path: str, mtime: float | None, *, recursive: bool) -> list:
+    """Stat every member of a collection. Blocking, so it runs in a worker thread."""
     members = []
-    for name in index.names():
-        entry = index.get(name)
+    for child in index.children(path):
+        if index.is_collection(child):
+            members.append(collection_resource(child, mtime))
+            if recursive:
+                members.extend(_list_members(index, child, mtime, recursive=True))
+            continue
+        entry = index.get(child)
         if entry is None:
             continue
         facts = stat_file(entry.real_path)
         if facts is None:
             # Deleted between the index build and now: omit it rather than
             # advertise a book that would 404 on GET.
-            log.warning("listing: %s vanished from disk, omitting", name)
+            log.warning("listing: %s vanished from disk, omitting", child)
             continue
-        members.append(file_resource(name, facts))
+        members.append(file_resource(child, facts))
     return members
 
 
-async def root_endpoint(request: Request) -> Response:
-    """The flat collection itself."""
-    if request.method == "OPTIONS":
-        return _options_response()
-
-    index = await _current_index(request)
-
+async def _collection_response(request: Request, index: LibraryIndex, path: str) -> Response:
     if request.method == "PROPFIND":
+        depth = parse_depth(request.headers.get("depth"))
 
         async def resources(prop_request):
-            # The index already carries metadata.db's mtime, so the collection's
+            # The index already carries metadata.db's mtime, so a collection's
             # own last-modified costs no extra stat.
             mtime = index.signature[0] / 1e9 if index.signature else None
-            collection = collection_resource(mtime)
-            if parse_depth(request.headers.get("depth")) == 0:
+            collection = collection_resource(path, mtime)
+            if depth == 0:
                 return [collection]
-            members = await anyio.to_thread.run_sync(_list_members, index)
+            members = await anyio.to_thread.run_sync(
+                partial(_list_members, index, path, mtime, recursive=depth == "infinity")
+            )
             return [collection, *members]
 
         return await _propfind_response(request, resources)
 
-    # A GET on the collection has no useful body for a machine client, but
+    # A GET on a collection has no useful body for a machine client, but
     # answering plainly beats a stack trace.
     return PlainTextResponse(
-        f"{len(index.entries)} book(s). Use a WebDAV client.\n", status_code=200
+        f"{len(index.children(path))} member(s). Use a WebDAV client.\n", status_code=200
     )
 
 
-async def member_endpoint(request: Request) -> Response:
-    """One book."""
+async def endpoint(request: Request) -> Response:
+    """One collection or one book, decided by the index rather than by the URL."""
     if request.method == "OPTIONS":
         return _options_response()
 
-    name = request.path_params["name"]
+    # A trailing slash is how clients spell "collection", but the index keys
+    # collections without one.
+    path = request.path_params.get("path", "").strip("/")
     index = await _current_index(request)
-    entry = index.get(name)
+
+    if index.is_collection(path):
+        return await _collection_response(request, index, path)
+
+    entry = index.get(path)
 
     # One stat serves both the properties and the response headers.
     stat_result = (
@@ -140,13 +149,13 @@ async def member_endpoint(request: Request) -> Response:
         async def resources(prop_request):
             if stat_result is None:
                 return None
-            return [file_resource(name, facts_from_stat(stat_result))]
+            return [file_resource(path, facts_from_stat(stat_result))]
 
         return await _propfind_response(request, resources)
 
     if stat_result is None:
         if entry is not None:
-            log.warning("GET %s: file vanished from disk: %s", name, entry.real_path)
+            log.warning("GET %s: file vanished from disk: %s", path, entry.real_path)
         return PlainTextResponse("Not Found", status_code=404)
 
     assert entry is not None
@@ -156,7 +165,7 @@ async def member_endpoint(request: Request) -> Response:
     # the stat result avoids a second stat and drives its Range handling.
     return FileResponse(
         entry.real_path,
-        media_type=content_type_for(name),
+        media_type=content_type_for(path),
         headers={"etag": facts.etag, "last-modified": facts.http_date},
         stat_result=stat_result,
     )
@@ -175,8 +184,8 @@ def create_app(config: Config) -> Starlette:
 
     app = Starlette(
         routes=[
-            Route("/", root_endpoint, methods=list(ALLOWED_METHODS)),
-            Route("/{name}", member_endpoint, methods=list(ALLOWED_METHODS)),
+            Route("/", endpoint, methods=list(ALLOWED_METHODS)),
+            Route("/{path:path}", endpoint, methods=list(ALLOWED_METHODS)),
         ],
         lifespan=lifespan,
     )

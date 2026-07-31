@@ -18,6 +18,7 @@ CREATE TABLE books (
     sort TEXT,
     series_index REAL NOT NULL DEFAULT 1.0,
     author_sort TEXT,
+    pubdate TIMESTAMP DEFAULT '0101-01-01 00:00:00+00:00',
     path TEXT NOT NULL DEFAULT '',
     has_cover BOOL DEFAULT 0,
     uuid TEXT,
@@ -64,6 +65,8 @@ class LibraryBuilder:
         formats: tuple[str, ...] = ("EPUB",),
         series: str | None = None,
         series_index: float = 1.0,
+        title_sort: str | None = None,
+        year: int | None = None,
         create_files: bool | tuple[str, ...] = True,
         content: bytes = b"book contents",
     ) -> int:
@@ -71,10 +74,13 @@ class LibraryBuilder:
         book_id = book_id if book_id is not None else self._next_id
         self._next_id = max(self._next_id, book_id) + 1
         path = path if path is not None else f"{author_sort}/{title} ({book_id})"
+        # Calibre's own "no date" sentinel, which must not surface as a year.
+        pubdate = f"{year}-06-01 00:00:00+00:00" if year else "0101-01-01 00:00:00+00:00"
 
         self._connection.execute(
-            "INSERT INTO books (id, title, author_sort, path, series_index) VALUES (?, ?, ?, ?, ?)",
-            (book_id, title, author_sort, path, series_index),
+            "INSERT INTO books (id, title, sort, author_sort, pubdate, path, series_index) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (book_id, title, title_sort, author_sort, pubdate, path, series_index),
         )
         if series is not None:
             series_id = self._series.get(series)
@@ -115,17 +121,17 @@ class LibraryBuilder:
         self._connection.commit()
         return book_id
 
-    def config(self, **overrides) -> Config:
-        base = Config.from_env(
-            {
-                "CW_LIBRARY_ROOT": str(self.root),
-                "CW_USERNAME": "user",
-                "CW_PASSWORD": "pass",
-                # Zero debounce keeps freshness tests deterministic.
-                "CW_INDEX_DEBOUNCE_SECONDS": "0",
-            }
-        )
-        return replace(base, **overrides)
+    def config(self, *, template: str | None = None, **overrides) -> Config:
+        environment = {
+            "CW_LIBRARY_ROOT": str(self.root),
+            "CW_USERNAME": "user",
+            "CW_PASSWORD": "pass",
+            # Zero debounce keeps freshness tests deterministic.
+            "CW_INDEX_DEBOUNCE_SECONDS": "0",
+        }
+        if template is not None:
+            environment["CW_PATH_TEMPLATE"] = template
+        return replace(Config.from_env(environment), **overrides)
 
     def close(self) -> None:
         self._connection.close()

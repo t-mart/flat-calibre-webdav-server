@@ -63,6 +63,20 @@ def prop_text(response: ET.Element, local: str) -> str | None:
     return None
 
 
+def books(client) -> dict[str, ET.Element]:
+    """Every non-collection response, from one recursive PROPFIND of the root.
+
+    Collections are exactly the hrefs with a trailing slash, which is the same
+    signal a real client goes by.
+    """
+    found = responses(propfind(client, depth="infinity").content)
+    return {href: response for href, response in found.items() if not href.endswith("/")}
+
+
+def a_book(client) -> str:
+    return next(iter(books(client)))
+
+
 class TestAuth:
     def test_unauthenticated_request_is_challenged(self, client):
         response = client.request("PROPFIND", "/", headers={"Depth": "1"})
@@ -101,14 +115,19 @@ class TestOptions:
 
 
 class TestPropfindRoot:
-    def test_depth_1_lists_every_book(self, client):
+    def test_depth_1_lists_the_top_level_only(self, client):
         response = propfind(client, depth="1")
         assert response.status_code == 207
         assert response.headers["content-type"].startswith("application/xml")
         found = responses(response.content)
-        # The collection itself plus one response per book.
-        assert len(found) == 4
-        assert "/" in found
+        # The root itself plus one collection per author, and no books: the
+        # default template puts every book at least one level down.
+        assert set(found) == {
+            "/",
+            "/Herbert%2C%20Frank/",
+            "/Herbert%2C%20Brian/",
+            "/Bola%C3%B1o%2C%20Roberto/",
+        }
 
     def test_depth_0_returns_only_the_collection(self, client):
         found = responses(propfind(client, depth="0").content)
@@ -119,44 +138,103 @@ class TestPropfindRoot:
         resourcetype = resourcetype_of(found["/"])
         assert resourcetype.find(qname("collection")) is not None
 
+    def test_depth_infinity_walks_the_whole_tree(self, client):
+        found = responses(propfind(client, depth="infinity").content)
+        assert set(found) == {
+            "/",
+            "/Herbert%2C%20Frank/",
+            "/Herbert%2C%20Frank/Dune/",
+            "/Herbert%2C%20Frank/Dune/01%20-%20Dune.epub",
+            "/Herbert%2C%20Brian/",
+            "/Herbert%2C%20Brian/Dune_%20House%20Atreides.epub",
+            "/Bola%C3%B1o%2C%20Roberto/",
+            "/Bola%C3%B1o%2C%20Roberto/2666.epub",
+        }
+
+    def test_an_absent_depth_header_means_infinity(self, client):
+        # RFC 4918's default, and affordable because the tree is in memory.
+        response = client.request("PROPFIND", "/", auth=AUTH)
+        assert len(responses(response.content)) == 8
+
     def test_books_are_not_collections(self, client):
-        found = responses(propfind(client).content)
-        for href, response in found.items():
-            if href == "/":
-                continue
+        for href, response in books(client).items():
             # An empty resourcetype is exactly what marks a non-collection.
             assert list(resourcetype_of(response)) == [], f"{href} must not be a collection"
 
     def test_every_book_carries_the_required_properties(self, client):
-        found = responses(propfind(client).content)
-        for href, response in found.items():
-            if href == "/":
-                continue
+        for href, response in books(client).items():
             for prop in ("getcontentlength", "getlastmodified", "getetag", "getcontenttype"):
                 assert prop_text(response, prop), f"{href} missing {prop}"
 
     def test_content_type_is_epub(self, client):
-        found = responses(propfind(client).content)
-        book = next(r for h, r in found.items() if h != "/")
-        assert prop_text(book, "getcontenttype") == "application/epub+zip"
+        assert prop_text(books(client)[a_book(client)], "getcontenttype") == "application/epub+zip"
 
-    def test_no_nested_collections_are_advertised(self, client):
-        found = responses(propfind(client).content)
-        assert sum(1 for h in found if h != "/" and h.endswith("/")) == 0
+    def test_a_flat_template_serves_books_from_the_root(self, library):
+        library.add_book("Dune", "Herbert, Frank")
+        flat = "{author_sort} - {title}.{ext}"
+        with TestClient(create_app(library.config(template=flat))) as flat_client:
+            found = responses(propfind(flat_client, depth="1").content)
+        assert set(found) == {"/", "/Herbert%2C%20Frank%20-%20Dune.epub"}
+
+
+class TestPropfindCollection:
+    def test_depth_0_on_a_subcollection(self, client):
+        found = responses(propfind(client, "/Herbert%2C%20Frank/", depth="0").content)
+        assert list(found) == ["/Herbert%2C%20Frank/"]
+
+    def test_depth_1_lists_immediate_members_only(self, client):
+        found = responses(propfind(client, "/Herbert%2C%20Frank/", depth="1").content)
+        assert set(found) == {"/Herbert%2C%20Frank/", "/Herbert%2C%20Frank/Dune/"}
+
+    def test_a_collection_resolves_without_its_trailing_slash(self, client):
+        found = responses(propfind(client, "/Herbert%2C%20Frank", depth="0").content)
+        # The href in the answer always carries the slash, whatever was asked for.
+        assert list(found) == ["/Herbert%2C%20Frank/"]
+
+    def test_displayname_is_the_last_component(self, client):
+        found = responses(propfind(client, "/Herbert%2C%20Frank/Dune/", depth="0").content)
+        assert prop_text(found["/Herbert%2C%20Frank/Dune/"], "displayname") == "Dune"
+
+    def test_missing_collection_is_404(self, client):
+        assert propfind(client, "/Nobody%2C%20A/", depth="0").status_code == 404
+
+    def test_a_collection_has_no_size_or_etag(self, client):
+        found = responses(propfind(client, "/Herbert%2C%20Frank/", depth="0").content)
+        collection = found["/Herbert%2C%20Frank/"]
+        assert prop_text(collection, "getcontentlength") is None
+        assert prop_text(collection, "getetag") is None
+
+
+class TestPathSafety:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/../metadata.db",
+            "/..%2F..%2Fetc%2Fpasswd",
+            "/Herbert%2C%20Frank/../../metadata.db",
+            "/metadata.db",
+        ],
+    )
+    def test_nothing_outside_the_index_is_reachable(self, client, path):
+        # Paths resolve against the index, never against the filesystem, so a
+        # traversal attempt is just a name that was never advertised.
+        assert client.get(path, auth=AUTH).status_code == 404
 
 
 class TestHrefEncoding:
     def test_colon_and_comma_and_space_are_encoded(self, client):
-        hrefs = set(responses(propfind(client).content))
-        assert "/Herbert%2C%20Brian%20-%20Dune_%20House%20Atreides.epub" in hrefs
+        assert "/Herbert%2C%20Brian/Dune_%20House%20Atreides.epub" in books(client)
 
     def test_non_ascii_is_percent_encoded_as_utf8(self, client):
-        hrefs = set(responses(propfind(client).content))
-        assert "/Bola%C3%B1o%2C%20Roberto%20-%202666.epub" in hrefs
+        assert "/Bola%C3%B1o%2C%20Roberto/2666.epub" in books(client)
+
+    def test_separators_are_not_encoded(self, client):
+        # `%2F` would make the whole path one component to the client.
+        assert all("%2F" not in href.upper() for href in books(client))
 
     def test_every_advertised_href_is_fetchable(self, client):
         # The real round-trip guarantee: whatever we advertise must resolve.
-        hrefs = [h for h in responses(propfind(client).content) if h != "/"]
+        hrefs = [h for h in responses(propfind(client, depth="infinity").content) if h != "/"]
         assert hrefs
         for href in hrefs:
             assert client.head(href, auth=AUTH).status_code == 200, href
@@ -164,7 +242,7 @@ class TestHrefEncoding:
 
 class TestPropfindMember:
     def test_depth_0_on_a_book(self, client):
-        href = next(h for h in responses(propfind(client).content) if h != "/")
+        href = a_book(client)
         found = responses(propfind(client, href, depth="0").content)
         assert list(found) == [href]
 
@@ -172,7 +250,7 @@ class TestPropfindMember:
         assert propfind(client, "/nope.epub", depth="0").status_code == 404
 
     def test_named_properties_are_returned(self, client):
-        href = next(h for h in responses(propfind(client).content) if h != "/")
+        href = a_book(client)
         body = (
             b'<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop>'
             b"<D:getcontentlength/><D:getetag/></D:prop></D:propfind>"
@@ -182,7 +260,7 @@ class TestPropfindMember:
         assert prop_text(found[href], "getetag")
 
     def test_unknown_property_gets_a_404_propstat(self, client):
-        href = next(h for h in responses(propfind(client).content) if h != "/")
+        href = a_book(client)
         body = (
             b'<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop>'
             b"<D:quota-available-bytes/></D:prop></D:propfind>"
@@ -192,7 +270,7 @@ class TestPropfindMember:
         assert any("404" in status for status in statuses)
 
     def test_propname_returns_names_without_values(self, client):
-        href = next(h for h in responses(propfind(client).content) if h != "/")
+        href = a_book(client)
         body = b'<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:propname/></D:propfind>'
         found = responses(propfind(client, href, depth="0", body=body).content)
         length = found[href].find(f".//{qname('getcontentlength')}")
@@ -205,13 +283,13 @@ class TestPropfindMember:
 
 class TestGet:
     def test_book_downloads(self, client):
-        href = next(h for h in responses(propfind(client).content) if h != "/")
+        href = a_book(client)
         response = client.get(href, auth=AUTH)
         assert response.status_code == 200
         assert response.content
 
     def test_head_carries_length_without_a_body(self, client):
-        href = next(h for h in responses(propfind(client).content) if h != "/")
+        href = a_book(client)
         response = client.head(href, auth=AUTH)
         assert response.status_code == 200
         assert int(response.headers["content-length"]) > 0
@@ -221,23 +299,20 @@ class TestGet:
         assert client.get("/nope.epub", auth=AUTH).status_code == 404
 
     def test_etag_matches_the_one_propfind_reported(self, client):
-        # The contract with the client plugin: the listing's etag is the key it
-        # uses for change detection, so a GET must not report a different one.
-        found = responses(propfind(client).content)
-        href, response = next((h, r) for h, r in found.items() if h != "/")
+        # A listing that disagreed with the download would silently break any
+        # client using the etag for change detection.
+        href, response = next(iter(books(client).items()))
         assert client.head(href, auth=AUTH).headers["etag"] == prop_text(response, "getetag")
 
     def test_content_length_matches_propfind(self, client):
-        found = responses(propfind(client).content)
-        href, response = next((h, r) for h, r in found.items() if h != "/")
+        href, response = next(iter(books(client).items()))
         head = client.head(href, auth=AUTH)
         assert head.headers["content-length"] == prop_text(response, "getcontentlength")
 
 
 class TestRanges:
     def _big_book(self, client):
-        found = responses(propfind(client).content)
-        return next(h for h in found if "2666" in h)
+        return next(h for h in books(client) if "2666" in h)
 
     def test_accept_ranges_is_advertised(self, client):
         response = client.head(self._big_book(client), auth=AUTH)
@@ -265,7 +340,7 @@ class TestReadOnly:
         "method", ["PUT", "DELETE", "MKCOL", "MOVE", "COPY", "LOCK", "UNLOCK", "PROPPATCH"]
     )
     def test_write_methods_are_rejected(self, client, method):
-        href = next(h for h in responses(propfind(client).content) if h != "/")
+        href = a_book(client)
         for target in ("/", href):
             response = client.request(method, target, auth=AUTH, content=b"")
             assert response.status_code in (403, 405), f"{method} {target}"
@@ -278,6 +353,6 @@ class TestReadOnly:
 
 class TestFreshness:
     def test_a_new_book_appears_without_a_restart(self, client, library):
-        assert len(responses(propfind(client).content)) == 4
+        assert len(books(client)) == 3
         library.add_book("Hatchet", "Paulsen, Gary")
-        assert len(responses(propfind(client).content)) == 5
+        assert len(books(client)) == 4

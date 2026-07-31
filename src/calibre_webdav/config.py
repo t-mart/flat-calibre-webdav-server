@@ -13,16 +13,31 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from .naming import (
+    ALWAYS_ILLEGAL_CHARS,
+    FAT32_ILLEGAL_CHARS,
+    PathTemplate,
+    TemplateError,
+    parse_template,
+)
+
 DEFAULT_FORMAT_PREFERENCE = ("epub", "pdf")
+
+# One directory per author, one per series, the series index leading the title so
+# a series sorts into reading order. Standalone books land beside the series
+# directories because the whole `{series...}` group renders empty without one.
+DEFAULT_PATH_TEMPLATE = "{author_sort}/{series:||/}{series_index:|| - }{title}.{ext}"
 
 # FAT32 long filenames cap at 255 UTF-16 units. We stay well under it: KOReader
 # writes a `<stem>.sdr` sidecar directory next to each book and puts its own
 # files inside, so the book name is not the only thing competing for path budget.
 DEFAULT_MAX_FILENAME_LENGTH = 200
 
-# Characters that are illegal in a FAT32 filename. `/` is doubly important: it
-# would also split the flat name into WebDAV path segments.
-ILLEGAL_FILENAME_CHARS = frozenset(':*?"<>|\\/')
+DEFAULT_FAT32_REPLACEMENT = "_"
+
+# Values that turn FAT32 sanitization off entirely, rather than naming a
+# replacement string. The same words `_env_bool` reads as false.
+_DISABLING_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 class ConfigError(ValueError):
@@ -38,8 +53,9 @@ class Config:
     password: str | None
     allow_anonymous: bool
     format_preference: tuple[str, ...]
+    path_template: PathTemplate
     max_filename_length: int
-    sanitize_replacement: str
+    fat32_replacement: str | None
     index_debounce_seconds: float
     db_timeout_seconds: float
     db_retry_attempts: int
@@ -64,13 +80,7 @@ class Config:
                 "Set CW_ALLOW_ANONYMOUS=true to serve without authentication."
             )
 
-        # Also verbatim, so " - " stays a valid replacement alongside "_".
-        replacement = env.get("CW_SANITIZE_REPLACEMENT") or "_"
-        if any(char in ILLEGAL_FILENAME_CHARS for char in replacement):
-            raise ConfigError(
-                f"CW_SANITIZE_REPLACEMENT={replacement!r} contains a character "
-                "that is itself illegal in a FAT32 filename"
-            )
+        replacement = _env_replacement(env, "CW_FAT32_REPLACEMENT")
 
         return cls(
             library_root=Path(_require(env, "CW_LIBRARY_ROOT")).expanduser(),
@@ -80,6 +90,7 @@ class Config:
             password=password,
             allow_anonymous=allow_anonymous,
             format_preference=_env_formats(env, "CW_FORMAT_PREFERENCE"),
+            path_template=_env_template(env, "CW_PATH_TEMPLATE", replacement),
             max_filename_length=_env_int(
                 env,
                 "CW_MAX_FILENAME_LENGTH",
@@ -87,7 +98,7 @@ class Config:
                 minimum=16,
                 maximum=255,
             ),
-            sanitize_replacement=replacement,
+            fat32_replacement=replacement,
             index_debounce_seconds=_env_float(env, "CW_INDEX_DEBOUNCE_SECONDS", 5.0, minimum=0.0),
             db_timeout_seconds=_env_float(env, "CW_DB_TIMEOUT_SECONDS", 5.0, minimum=0.1),
             db_retry_attempts=_env_int(env, "CW_DB_RETRY_ATTEMPTS", 3, minimum=1, maximum=10),
@@ -194,6 +205,35 @@ def _env_float(env: Mapping[str, str], key: str, default: float, *, minimum: flo
     if parsed < minimum:
         raise ConfigError(f"{key}={parsed} is out of range (>= {minimum})")
     return parsed
+
+
+def _env_replacement(env: Mapping[str, str], key: str) -> str | None:
+    """Parse the FAT32 replacement string, where a false-word means "not FAT32".
+
+    Taken verbatim otherwise, so " - " stays a valid replacement alongside "_".
+    Returning None rather than pairing the string with a separate boolean keeps
+    "is the target FAT32" and "what does it get instead" as one answer.
+    """
+    value = env.get(key)
+    if value is None or not value.strip():
+        return DEFAULT_FAT32_REPLACEMENT
+    if value.strip().casefold() in _DISABLING_VALUES:
+        return None
+    illegal = ALWAYS_ILLEGAL_CHARS | FAT32_ILLEGAL_CHARS
+    offender = next((char for char in value if char in illegal), None)
+    if offender is not None:
+        raise ConfigError(
+            f"{key}={value!r} contains {offender!r}, which is itself illegal in a filename"
+        )
+    return value
+
+
+def _env_template(env: Mapping[str, str], key: str, replacement: str | None) -> PathTemplate:
+    text = _env_str(env, key, DEFAULT_PATH_TEMPLATE) or DEFAULT_PATH_TEMPLATE
+    try:
+        return parse_template(text, replacement=replacement)
+    except TemplateError as error:
+        raise ConfigError(f"{key}={text!r}: {error}") from None
 
 
 def _env_formats(env: Mapping[str, str], key: str) -> tuple[str, ...]:

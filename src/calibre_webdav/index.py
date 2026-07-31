@@ -1,21 +1,22 @@
-"""Building and caching the flat book index.
+"""Building and caching the served book tree.
 
 Discovery comes entirely from `metadata.db`. The library tree is never walked;
 the filesystem is consulted only to confirm that a file a `data` row points at
-actually exists.
+actually exists. The shape of the served tree comes from the path template, not
+from the library's own layout.
 """
 
 import logging
 import sqlite3
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 
 from .config import Config
-from .naming import BookNaming, assign_flat_names
+from .naming import BookNaming, assign_paths
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +33,9 @@ SELECT
     b.id,
     b.author_sort,
     b.title,
+    b.sort AS title_sort,
     b.series_index,
+    b.pubdate,
     b.path,
     s.name AS series_name,
     d.name AS data_name,
@@ -46,29 +49,43 @@ LEFT JOIN series s ON s.id = bsl.series
 
 @dataclass(frozen=True, slots=True)
 class BookEntry:
-    """One resolvable book: a flat name pointing at a real file on disk."""
+    """One resolvable book: a served path pointing at a real file on disk."""
 
     book_id: int
-    flat_name: str
+    path: str
     real_path: Path
 
 
 @dataclass(frozen=True, slots=True)
 class LibraryIndex:
-    """An immutable snapshot of the library. Never mutated after construction."""
+    """An immutable snapshot of the library. Never mutated after construction.
+
+    Paths are relative and slash-separated, with `""` naming the root
+    collection. `directories` is what makes a path a collection, and it always
+    holds at least the root so an empty library still has something to PROPFIND.
+    """
 
     entries: Mapping[str, BookEntry] = field(default_factory=dict)
+    directories: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: {"": ()})
     skipped: int = 0
     signature: tuple[int, int] | None = None
     built_at: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "entries", MappingProxyType(dict(self.entries)))
+        object.__setattr__(self, "directories", MappingProxyType(dict(self.directories)))
 
-    def get(self, flat_name: str) -> BookEntry | None:
-        return self.entries.get(flat_name)
+    def get(self, path: str) -> BookEntry | None:
+        return self.entries.get(path)
 
-    def names(self) -> list[str]:
+    def is_collection(self, path: str) -> bool:
+        return path in self.directories
+
+    def children(self, path: str) -> tuple[str, ...]:
+        """The immediate members of a collection, files and subcollections alike."""
+        return self.directories.get(path, ())
+
+    def paths(self) -> list[str]:
         return sorted(self.entries)
 
 
@@ -186,7 +203,7 @@ def _resolve_file(
 
 
 def build_index(config: Config) -> LibraryIndex:
-    """Query the database and resolve every book to a flat name and real file."""
+    """Query the database and resolve every book to a served path and real file."""
     started = time.monotonic()
     signature = database_signature(config.database_path)
     rows = _fetch_rows(config)
@@ -199,8 +216,10 @@ def build_index(config: Config) -> LibraryIndex:
             {
                 "author_sort": row["author_sort"] or "Unknown",
                 "title": row["title"] or "Unknown",
+                "title_sort": row["title_sort"],
                 "series": row["series_name"],
                 "series_index": row["series_index"],
+                "year": _as_year(row["pubdate"]),
                 "path": row["path"] or "",
                 "formats": {},
             },
@@ -224,26 +243,35 @@ def build_index(config: Config) -> LibraryIndex:
                     author_sort=record["author_sort"],
                     title=record["title"],
                     extension=extension,
+                    title_sort=record["title_sort"],
                     series=record["series"],
                     series_index=_as_float(record["series_index"]),
+                    year=record["year"],
                 ),
                 real_path,
             )
         )
 
-    names = assign_flat_names(
+    assigned = assign_paths(
         (naming for naming, _ in resolved),
+        config.path_template,
         max_length=config.max_filename_length,
-        replacement=config.sanitize_replacement,
+        replacement=config.fat32_replacement,
     )
-    entries = {
-        names[naming.book_id]: BookEntry(
-            book_id=naming.book_id,
-            flat_name=names[naming.book_id],
-            real_path=real_path,
-        )
-        for naming, real_path in resolved
-    }
+    paths = {book_id: "/".join(components) for book_id, components in assigned.items()}
+
+    # A book whose path is also a directory cannot be served: WebDAV has no way
+    # to be both, and the client would have to create a file where it needs a
+    # folder. Rare, but a template like `{author_sort}/{title}` invites it.
+    collections = _collection_paths(paths.values())
+    entries: dict[str, BookEntry] = {}
+    for naming, real_path in resolved:
+        path = paths[naming.book_id]
+        if path.casefold() in collections:
+            log.warning("book %s: %r is also a directory, omitting", naming.book_id, path)
+            skipped += 1
+            continue
+        entries[path] = BookEntry(book_id=naming.book_id, path=path, real_path=real_path)
 
     log.info(
         "index built: %d books, %d skipped, in %.0f ms",
@@ -253,10 +281,40 @@ def build_index(config: Config) -> LibraryIndex:
     )
     return LibraryIndex(
         entries=entries,
+        directories=_tree(entries),
         skipped=skipped,
         signature=signature,
         built_at=time.monotonic(),
     )
+
+
+def _collection_paths(paths: Iterable[str]) -> set[str]:
+    """Every directory implied by a set of file paths, casefolded for comparison.
+
+    Casefolded because the destination filesystem may be case-insensitive, so a
+    file and a directory differing only in case still clobber each other there.
+    """
+    collections = set()
+    for path in paths:
+        components = path.split("/")
+        for depth in range(1, len(components)):
+            collections.add("/".join(components[:depth]).casefold())
+    return collections
+
+
+def _tree(entries: Mapping[str, BookEntry]) -> Mapping[str, tuple[str, ...]]:
+    """Invert the file paths into collection path -> immediate members."""
+    children: dict[str, set[str]] = {"": set()}
+    for path in entries:
+        components = path.split("/")
+        parent = ""
+        for depth in range(1, len(components)):
+            node = "/".join(components[:depth])
+            children[parent].add(node)
+            children.setdefault(node, set())
+            parent = node
+        children[parent].add(path)
+    return {parent: tuple(sorted(members)) for parent, members in children.items()}
 
 
 def _as_float(value) -> float:
@@ -264,6 +322,19 @@ def _as_float(value) -> float:
         return float(value)
     except TypeError, ValueError:
         return 1.0
+
+
+def _as_year(value) -> int | None:
+    """Pull the year out of a Calibre timestamp, ignoring its "undefined" date.
+
+    Calibre writes year 101 rather than NULL for a book with no publication
+    date, which would otherwise render as a real-looking directory.
+    """
+    try:
+        year = int(str(value)[:4])
+    except TypeError, ValueError:
+        return None
+    return year if year > 101 else None
 
 
 class IndexCache:
