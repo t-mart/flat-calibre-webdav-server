@@ -27,7 +27,7 @@ from .webdav import (
     stat_file,
 )
 
-log = logging.getLogger("fcws")
+log = logging.getLogger("calibre_webdav")
 
 _MULTISTATUS = "application/xml; charset=utf-8"
 
@@ -184,7 +184,7 @@ def create_app(config: Config) -> Starlette:
     app.state.config = config
 
     if config.allow_anonymous:
-        log.warning("FCWS_ALLOW_ANONYMOUS is set: serving without authentication")
+        log.warning("CW_ALLOW_ANONYMOUS is set: serving without authentication")
     elif config.username is None or config.password is None:
         # Config.from_env already enforces this, but create_app also takes
         # hand-built Config objects, and failing open here would be silent.

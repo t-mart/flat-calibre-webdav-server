@@ -32,9 +32,9 @@ COPY --from=builder /app /app
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    FCWS_LIBRARY_ROOT=/library \
-    FCWS_HOST=0.0.0.0 \
-    FCWS_PORT=8080
+    CW_LIBRARY_ROOT=/library \
+    CW_HOST=0.0.0.0 \
+    CW_PORT=8080
 
 # A default only. Whoever runs this has to be able to read the library on the
 # host, so the id is the operator's call: override with `docker run --user`.
@@ -42,4 +42,4 @@ ENV PATH="/app/.venv/bin:$PATH" \
 USER 1000:1000
 EXPOSE 8080
 
-ENTRYPOINT ["fcws"]
+ENTRYPOINT ["calibre-webdav"]

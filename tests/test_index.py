@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from fcws.index import IndexCache, build_index, database_signature
+from calibre_webdav.index import IndexCache, build_index, database_signature
 
 
 class TestDiscovery:

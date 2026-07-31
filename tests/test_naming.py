@@ -2,7 +2,7 @@
 
 import pytest
 
-from fcws.naming import (
+from calibre_webdav.naming import (
     BookNaming,
     assign_flat_names,
     build_flat_name,

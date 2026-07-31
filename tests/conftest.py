@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from fcws.config import Config
+from calibre_webdav.config import Config
 
 # A faithful subset of Calibre's schema: exactly the tables and columns the
 # index query touches.
@@ -118,11 +118,11 @@ class LibraryBuilder:
     def config(self, **overrides) -> Config:
         base = Config.from_env(
             {
-                "FCWS_LIBRARY_ROOT": str(self.root),
-                "FCWS_USERNAME": "user",
-                "FCWS_PASSWORD": "pass",
+                "CW_LIBRARY_ROOT": str(self.root),
+                "CW_USERNAME": "user",
+                "CW_PASSWORD": "pass",
                 # Zero debounce keeps freshness tests deterministic.
-                "FCWS_INDEX_DEBOUNCE_SECONDS": "0",
+                "CW_INDEX_DEBOUNCE_SECONDS": "0",
             }
         )
         return replace(base, **overrides)

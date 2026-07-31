@@ -1,4 +1,4 @@
-# flat-calibre-webdav-server
+# calibre-webdav
 
 A read-only WebDAV server that exposes a Calibre library as a **flat**
 collection: every book at the root, no subdirectories. Backed by the real files
@@ -93,33 +93,33 @@ Everything is an environment variable.
 
 | Variable                      | Default    | Meaning                                                      |
 | ----------------------------- | ---------- | ------------------------------------------------------------ |
-| `FCWS_LIBRARY_ROOT`           | _required_ | Calibre library root, the directory containing `metadata.db` |
-| `FCWS_USERNAME`               | _required_ | HTTP Basic username                                          |
-| `FCWS_PASSWORD`               | _required_ | HTTP Basic password                                          |
-| `FCWS_ALLOW_ANONYMOUS`        | `false`    | Serve without authentication; makes the credentials optional |
-| `FCWS_HOST`                   | `0.0.0.0`  | Bind address                                                 |
-| `FCWS_PORT`                   | `8080`     | Bind port                                                    |
-| `FCWS_FORMAT_PREFERENCE`      | `epub,pdf` | Format preference, most preferred first                      |
-| `FCWS_MAX_FILENAME_LENGTH`    | `200`      | Cap in UTF-16 units, under the FAT32 limit of 255            |
-| `FCWS_SANITIZE_REPLACEMENT`   | `_`        | Replacement for FAT32-illegal characters                     |
-| `FCWS_INDEX_DEBOUNCE_SECONDS` | `5`        | Minimum interval between freshness checks                    |
-| `FCWS_DB_TIMEOUT_SECONDS`     | `5`        | SQLite busy timeout                                          |
-| `FCWS_DB_RETRY_ATTEMPTS`      | `3`        | Retries when a writer holds the database                     |
-| `FCWS_VERBOSE`                | `3`        | 0 quiet, 3 info, 4+ debug with access logs                   |
+| `CW_LIBRARY_ROOT`           | _required_ | Calibre library root, the directory containing `metadata.db` |
+| `CW_USERNAME`               | _required_ | HTTP Basic username                                          |
+| `CW_PASSWORD`               | _required_ | HTTP Basic password                                          |
+| `CW_ALLOW_ANONYMOUS`        | `false`    | Serve without authentication; makes the credentials optional |
+| `CW_HOST`                   | `0.0.0.0`  | Bind address                                                 |
+| `CW_PORT`                   | `8080`     | Bind port                                                    |
+| `CW_FORMAT_PREFERENCE`      | `epub,pdf` | Format preference, most preferred first                      |
+| `CW_MAX_FILENAME_LENGTH`    | `200`      | Cap in UTF-16 units, under the FAT32 limit of 255            |
+| `CW_SANITIZE_REPLACEMENT`   | `_`        | Replacement for FAT32-illegal characters                     |
+| `CW_INDEX_DEBOUNCE_SECONDS` | `5`        | Minimum interval between freshness checks                    |
+| `CW_DB_TIMEOUT_SECONDS`     | `5`        | SQLite busy timeout                                          |
+| `CW_DB_RETRY_ATTEMPTS`      | `3`        | Retries when a writer holds the database                     |
+| `CW_VERBOSE`                | `3`        | 0 quiet, 3 info, 4+ debug with access logs                   |
 
 ## Running
 
 ```shell
-docker build --tag fcws:latest .
+docker build --tag calibre-webdav:latest .
 
-docker run --detach --name fcws --publish 8080:8080 --restart unless-stopped --user 1000:1000 --volume /my/ebooks:/library:ro --env FCWS_USERNAME=someuser --env FCWS_PASSWORD=somepassword fcws:latest
+docker run --detach --name calibre-webdav --publish 8080:8080 --restart unless-stopped --user 1000:1000 --volume /my/ebooks:/library:ro --env CW_USERNAME=someuser --env CW_PASSWORD=somepassword calibre-webdav:latest
 ```
 
 Pushes to `master` publish the image to the Forgejo instance's container
 registry (see
 [.forgejo/workflows/publish-container.yml](.forgejo/workflows/publish-container.yml)),
 so the build step can be skipped in favor of pulling
-`<forgejo-host>/<owner>/flat-calibre-webdav-server:latest`. Each push also
+`<forgejo-host>/<owner>/calibre-webdav:latest`. Each push also
 leaves behind an immutable tag of the short commit hash.
 
 Mount the library `:ro` so read-only access is enforced by the filesystem and

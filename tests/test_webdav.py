@@ -5,8 +5,8 @@ from xml.etree import ElementTree as ET
 import pytest
 from starlette.testclient import TestClient
 
-from fcws.app import create_app
-from fcws.config import ConfigError
+from calibre_webdav.app import create_app
+from calibre_webdav.config import ConfigError
 
 DAV = "DAV:"
 AUTH = ("user", "pass")

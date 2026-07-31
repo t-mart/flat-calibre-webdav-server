@@ -44,7 +44,6 @@ class Config:
     db_timeout_seconds: float
     db_retry_attempts: int
     verbose: int
-    dir_browser: bool
 
     @property
     def database_path(self) -> Path:
@@ -54,46 +53,45 @@ class Config:
     def from_env(cls, env: Mapping[str, str] | None = None) -> Config:
         env = os.environ if env is None else env
 
-        allow_anonymous = _env_bool(env, "FCWS_ALLOW_ANONYMOUS", False)
+        allow_anonymous = _env_bool(env, "CW_ALLOW_ANONYMOUS", False)
         # Credentials are taken verbatim: stripping would silently mangle a
         # password with meaningful leading or trailing whitespace.
-        username = env.get("FCWS_USERNAME") or None
-        password = env.get("FCWS_PASSWORD") or None
+        username = env.get("CW_USERNAME") or None
+        password = env.get("CW_PASSWORD") or None
         if not allow_anonymous and not (username and password):
             raise ConfigError(
-                "FCWS_USERNAME and FCWS_PASSWORD are required. "
-                "Set FCWS_ALLOW_ANONYMOUS=true to serve without authentication."
+                "CW_USERNAME and CW_PASSWORD are required. "
+                "Set CW_ALLOW_ANONYMOUS=true to serve without authentication."
             )
 
         # Also verbatim, so " - " stays a valid replacement alongside "_".
-        replacement = env.get("FCWS_SANITIZE_REPLACEMENT") or "_"
+        replacement = env.get("CW_SANITIZE_REPLACEMENT") or "_"
         if any(char in ILLEGAL_FILENAME_CHARS for char in replacement):
             raise ConfigError(
-                f"FCWS_SANITIZE_REPLACEMENT={replacement!r} contains a character "
+                f"CW_SANITIZE_REPLACEMENT={replacement!r} contains a character "
                 "that is itself illegal in a FAT32 filename"
             )
 
         return cls(
-            library_root=Path(_require(env, "FCWS_LIBRARY_ROOT")).expanduser(),
-            host=_env_str(env, "FCWS_HOST", "0.0.0.0") or "0.0.0.0",
-            port=_env_int(env, "FCWS_PORT", 8080, minimum=1, maximum=65535),
+            library_root=Path(_require(env, "CW_LIBRARY_ROOT")).expanduser(),
+            host=_env_str(env, "CW_HOST", "0.0.0.0") or "0.0.0.0",
+            port=_env_int(env, "CW_PORT", 8080, minimum=1, maximum=65535),
             username=username,
             password=password,
             allow_anonymous=allow_anonymous,
-            format_preference=_env_formats(env, "FCWS_FORMAT_PREFERENCE"),
+            format_preference=_env_formats(env, "CW_FORMAT_PREFERENCE"),
             max_filename_length=_env_int(
                 env,
-                "FCWS_MAX_FILENAME_LENGTH",
+                "CW_MAX_FILENAME_LENGTH",
                 DEFAULT_MAX_FILENAME_LENGTH,
                 minimum=16,
                 maximum=255,
             ),
             sanitize_replacement=replacement,
-            index_debounce_seconds=_env_float(env, "FCWS_INDEX_DEBOUNCE_SECONDS", 5.0, minimum=0.0),
-            db_timeout_seconds=_env_float(env, "FCWS_DB_TIMEOUT_SECONDS", 5.0, minimum=0.1),
-            db_retry_attempts=_env_int(env, "FCWS_DB_RETRY_ATTEMPTS", 3, minimum=1, maximum=10),
-            verbose=_env_int(env, "FCWS_VERBOSE", 3, minimum=0, maximum=5),
-            dir_browser=_env_bool(env, "FCWS_DIR_BROWSER", False),
+            index_debounce_seconds=_env_float(env, "CW_INDEX_DEBOUNCE_SECONDS", 5.0, minimum=0.0),
+            db_timeout_seconds=_env_float(env, "CW_DB_TIMEOUT_SECONDS", 5.0, minimum=0.1),
+            db_retry_attempts=_env_int(env, "CW_DB_RETRY_ATTEMPTS", 3, minimum=1, maximum=10),
+            verbose=_env_int(env, "CW_VERBOSE", 3, minimum=0, maximum=5),
         )
 
     def validate(self) -> None:
@@ -104,9 +102,9 @@ class Config:
         library on the host, and `Path.is_dir()` reports that as a plain False,
         which sends you looking in entirely the wrong place.
         """
-        mode = _stat_mode(self.library_root, "FCWS_LIBRARY_ROOT")
+        mode = _stat_mode(self.library_root, "CW_LIBRARY_ROOT")
         if not stat.S_ISDIR(mode):
-            raise ConfigError(f"FCWS_LIBRARY_ROOT={self.library_root} is not a directory")
+            raise ConfigError(f"CW_LIBRARY_ROOT={self.library_root} is not a directory")
         if not os.access(self.library_root, os.R_OK | os.X_OK):
             raise ConfigError(_unreadable_message(self.library_root))
 
@@ -124,7 +122,7 @@ def _stat_mode(path: Path, label: str) -> int:
     except FileNotFoundError:
         if label == "metadata.db":
             raise ConfigError(
-                f"no Calibre database at {path}; FCWS_LIBRARY_ROOT must point at the library root"
+                f"no Calibre database at {path}; CW_LIBRARY_ROOT must point at the library root"
             ) from None
         raise ConfigError(f"{label}={path} does not exist") from None
     except PermissionError:

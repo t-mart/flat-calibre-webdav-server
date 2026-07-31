@@ -1,7 +1,7 @@
 [project]
-name = "flat-calibre-webdav-server"
+name = "calibre-webdav"
 version = "0.1.0"
-description = "Read-only WebDAV server exposing a Calibre library as a flat collection"
+description = "Read-only WebDAV server exposing a Calibre library under a configurable path template"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-fcws = "fcws.app:main"
+calibre-webdav = "calibre_webdav.app:main"
 
 [dependency-groups]
 dev = [
@@ -26,7 +26,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/fcws"]
+packages = ["src/calibre_webdav"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
