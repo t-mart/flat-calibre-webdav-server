@@ -23,13 +23,12 @@ from dataclasses import dataclass
 # in a filename anywhere. Always replaced, even when FAT32 handling is off.
 ALWAYS_ILLEGAL_CHARS = frozenset("/")
 
-# Illegal on FAT32 and Windows, perfectly legal on ext4. Replaced only when a
-# replacement string is configured.
+# Illegal on FAT32 and Windows, perfectly legal on ext4. Replaced only when the
+# target is FAT32.
 FAT32_ILLEGAL_CHARS = frozenset(':*?"<>|\\')
 
-# The replacement for the always-illegal set when FAT32 handling is off, since
-# there is no operator-supplied string to fall back on.
-_HARD_REPLACEMENT = "_"
+# What every illegal character becomes. Also Calibre's own convention.
+REPLACEMENT = "_"
 
 # Characters FAT32 forbids at the very end of a name. A dot or space mid-name is
 # fine; a trailing one makes the write fail on-device.
@@ -123,40 +122,38 @@ def truncate_utf16(text: str, limit: int) -> str:
     return "".join(kept)
 
 
-def _illegal_chars(replacement: str | None) -> frozenset[str]:
+def _illegal_chars(fat32: bool) -> frozenset[str]:
     """The characters replaced under a given FAT32 setting."""
-    if replacement is None:
+    if not fat32:
         return ALWAYS_ILLEGAL_CHARS
     return ALWAYS_ILLEGAL_CHARS | FAT32_ILLEGAL_CHARS
 
 
-def sanitize_component(text: str, replacement: str | None = _HARD_REPLACEMENT) -> str:
+def sanitize_component(text: str, fat32: bool = True) -> str:
     """Make one field value safe to drop into a path component.
 
-    A `replacement` of None means the target is not FAT32: only the
-    always-illegal set is substituted, and with `_`, since there is no
-    configured string to use. Non-ASCII is left untouched either way.
+    A `fat32` of False means the target is not FAT32: only the always-illegal
+    set is substituted. Non-ASCII is left untouched either way.
     """
-    illegal = _illegal_chars(replacement)
-    substitute = _HARD_REPLACEMENT if replacement is None else replacement
+    illegal = _illegal_chars(fat32)
     swapped = "".join(
-        substitute if char in illegal or ord(char) < 0x20 or ord(char) == 0x7F else char
+        REPLACEMENT if char in illegal or ord(char) < 0x20 or ord(char) == 0x7F else char
         for char in text
     )
     # Collapse whitespace runs so substitution cannot leave odd gaps, and so the
     # result is stable regardless of stray spacing in the metadata.
     collapsed = " ".join(swapped.split())
     # A value of bare dots would mean "this directory" or "the parent one".
-    return _HARD_REPLACEMENT * len(collapsed) if collapsed in {".", ".."} else collapsed
+    return REPLACEMENT * len(collapsed) if collapsed in {".", ".."} else collapsed
 
 
-def parse_template(text: str, *, replacement: str | None = _HARD_REPLACEMENT) -> PathTemplate:
+def parse_template(text: str, *, fat32: bool = True) -> PathTemplate:
     """Parse a template, rejecting anything that cannot render a legal path.
 
-    `replacement` is consulted only to decide whether the template's own literal
-    text has to be FAT32-legal: an operator who writes a `:` into a template
-    aimed at a Kobo wants to hear about it at startup rather than discover
-    unwritable files on the device later.
+    `fat32` is consulted only to decide whether the template's own literal text
+    has to be FAT32-legal: an operator who writes a `:` into a template aimed at
+    a Kobo wants to hear about it at startup rather than discover unwritable
+    files on the device later.
     """
     nodes: list[str | Placeholder] = []
     position = 0
@@ -165,33 +162,34 @@ def parse_template(text: str, *, replacement: str | None = _HARD_REPLACEMENT) ->
         field, prefix, suffix = match.group(1), match.group(2) or "", match.group(3) or ""
         if field not in FIELDS:
             raise TemplateError(
-                f"unknown template field {{{field}}}; known fields are {', '.join(sorted(FIELDS))}"
+                f"unknown template field {{{field}}}. "
+                f"The known fields are {', '.join(sorted(FIELDS))}."
             )
         nodes.append(Placeholder(field, prefix, suffix))
         position = match.end()
     nodes.append(text[position:])
 
     template = tuple(node for node in nodes if node != "")
-    _validate(template, replacement=replacement)
+    _validate(template, fat32=fat32)
     return template
 
 
-def _validate(template: PathTemplate, *, replacement: str | None) -> None:
+def _validate(template: PathTemplate, *, fat32: bool) -> None:
     literals = [node for node in template if isinstance(node, str)]
     literals += [node.prefix + node.suffix for node in template if isinstance(node, Placeholder)]
     # `/` is the separator and so is legal in the template's own text, whatever
     # it would mean inside a field value.
-    illegal = _illegal_chars(replacement) - ALWAYS_ILLEGAL_CHARS
+    illegal = _illegal_chars(fat32) - ALWAYS_ILLEGAL_CHARS
 
     for literal in literals:
         stray = next((char for char in literal if char in "{}"), None)
         if stray is not None:
-            raise TemplateError(f"stray {stray!r} in the template; a placeholder is malformed")
+            raise TemplateError(f"stray {stray!r} in the template. A placeholder is malformed.")
         offender = next((char for char in literal if char in illegal), None)
         if offender is not None:
             raise TemplateError(
-                f"the template contains {offender!r}, which is illegal in a FAT32 filename; "
-                "set CW_FAT32_REPLACEMENT=false if the target is not FAT32"
+                f"the template contains {offender!r}, which is illegal in a FAT32 filename. "
+                "If the target is not FAT32, set CW_FAT32=false."
             )
 
     if not any(isinstance(node, Placeholder) and node.field == "ext" for node in template):
@@ -212,7 +210,7 @@ def render_path(
     template: PathTemplate,
     *,
     max_length: int,
-    replacement: str | None = _HARD_REPLACEMENT,
+    fat32: bool = True,
     include_id: bool = False,
 ) -> tuple[str, ...]:
     """Render one book to its relative path, as a tuple of path components.
@@ -222,7 +220,7 @@ def render_path(
     `max_length`; on the last one the extension and the collision-disambiguating
     id suffix are preserved and only the stem is truncated.
     """
-    rendered = "".join(_render_node(node, book, replacement) for node in template)
+    rendered = "".join(_render_node(node, book, fat32) for node in template)
     components = [component for component in rendered.split("/") if component] or [""]
 
     extension = f".{FIELDS['ext'](book)}"
@@ -231,26 +229,26 @@ def render_path(
         components[-1] = f"{components[-1].removesuffix(tail)} ({book.book_id}){tail}"
         tail = f" ({book.book_id}){tail}"
 
-    fitted = [_fit(component, max_length, replacement=replacement) for component in components[:-1]]
-    fitted.append(_fit(components[-1], max_length, tail=tail, replacement=replacement))
+    fitted = [_fit(component, max_length, fat32=fat32) for component in components[:-1]]
+    fitted.append(_fit(components[-1], max_length, tail=tail, fat32=fat32))
 
     fallback = f"book {book.book_id}{tail}"
     return tuple(component or fallback for component in fitted)
 
 
-def _render_node(node: str | Placeholder, book: BookNaming, replacement: str | None) -> str:
+def _render_node(node: str | Placeholder, book: BookNaming, fat32: bool) -> str:
     if isinstance(node, str):
         return node
-    value = sanitize_component(FIELDS[node.field](book), replacement)
+    value = sanitize_component(FIELDS[node.field](book), fat32)
     return f"{node.prefix}{value}{node.suffix}" if value else ""
 
 
-def _fit(component: str, limit: int, *, replacement: str | None, tail: str = "") -> str:
+def _fit(component: str, limit: int, *, fat32: bool, tail: str = "") -> str:
     """Cap one component, keeping `tail` intact and truncating only the stem."""
     stem = component.removesuffix(tail)
     if utf16_length(component) > limit:
         stem = truncate_utf16(stem, limit - utf16_length(tail))
-    if replacement is not None:
+    if fat32:
         stem = stem.rstrip(_TRAILING_JUNK)
     return f"{stem}{tail}" if stem else ""
 
@@ -260,7 +258,7 @@ def assign_paths(
     template: PathTemplate,
     *,
     max_length: int,
-    replacement: str | None = _HARD_REPLACEMENT,
+    fat32: bool = True,
 ) -> Mapping[int, tuple[str, ...]]:
     """Map book id -> path components, disambiguating only the paths that collide.
 
@@ -272,7 +270,7 @@ def assign_paths(
 
     def render(book: BookNaming, *, include_id: bool) -> tuple[str, ...]:
         return render_path(
-            book, template, max_length=max_length, replacement=replacement, include_id=include_id
+            book, template, max_length=max_length, fat32=fat32, include_id=include_id
         )
 
     plain = {book.book_id: render(book, include_id=False) for book in books}

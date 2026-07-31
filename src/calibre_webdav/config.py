@@ -13,13 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from .naming import (
-    ALWAYS_ILLEGAL_CHARS,
-    FAT32_ILLEGAL_CHARS,
-    PathTemplate,
-    TemplateError,
-    parse_template,
-)
+from .naming import PathTemplate, TemplateError, parse_template
 
 DEFAULT_FORMAT_PREFERENCE = ("epub", "pdf")
 
@@ -32,12 +26,6 @@ DEFAULT_PATH_TEMPLATE = "{author_sort}/{series:||/}{series_index:|| - }{title}.{
 # writes a `<stem>.sdr` sidecar directory next to each book and puts its own
 # files inside, so the book name is not the only thing competing for path budget.
 DEFAULT_MAX_FILENAME_LENGTH = 200
-
-DEFAULT_FAT32_REPLACEMENT = "_"
-
-# Values that turn FAT32 sanitization off entirely, rather than naming a
-# replacement string. The same words `_env_bool` reads as false.
-_DISABLING_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 class ConfigError(ValueError):
@@ -55,7 +43,7 @@ class Config:
     format_preference: tuple[str, ...]
     path_template: PathTemplate
     max_filename_length: int
-    fat32_replacement: str | None
+    fat32: bool
     index_debounce_seconds: float
     db_timeout_seconds: float
     db_retry_attempts: int
@@ -80,7 +68,7 @@ class Config:
                 "Set CW_ALLOW_ANONYMOUS=true to serve without authentication."
             )
 
-        replacement = _env_replacement(env, "CW_FAT32_REPLACEMENT")
+        fat32 = _env_bool(env, "CW_FAT32", True)
 
         return cls(
             library_root=Path(_require(env, "CW_LIBRARY_ROOT")).expanduser(),
@@ -90,7 +78,7 @@ class Config:
             password=password,
             allow_anonymous=allow_anonymous,
             format_preference=_env_formats(env, "CW_FORMAT_PREFERENCE"),
-            path_template=_env_template(env, "CW_PATH_TEMPLATE", replacement),
+            path_template=_env_template(env, "CW_PATH_TEMPLATE", fat32),
             max_filename_length=_env_int(
                 env,
                 "CW_MAX_FILENAME_LENGTH",
@@ -98,7 +86,7 @@ class Config:
                 minimum=16,
                 maximum=255,
             ),
-            fat32_replacement=replacement,
+            fat32=fat32,
             index_debounce_seconds=_env_float(env, "CW_INDEX_DEBOUNCE_SECONDS", 5.0, minimum=0.0),
             db_timeout_seconds=_env_float(env, "CW_DB_TIMEOUT_SECONDS", 5.0, minimum=0.1),
             db_retry_attempts=_env_int(env, "CW_DB_RETRY_ATTEMPTS", 3, minimum=1, maximum=10),
@@ -133,7 +121,7 @@ def _stat_mode(path: Path, label: str) -> int:
     except FileNotFoundError:
         if label == "metadata.db":
             raise ConfigError(
-                f"no Calibre database at {path}; CW_LIBRARY_ROOT must point at the library root"
+                f"no Calibre database at {path}. CW_LIBRARY_ROOT must point at the library root."
             ) from None
         raise ConfigError(f"{label}={path} does not exist") from None
     except PermissionError:
@@ -143,9 +131,9 @@ def _stat_mode(path: Path, label: str) -> int:
 def _unreadable_message(path: Path) -> str:
     return (
         f"{path} is not readable by uid={os.getuid()} gid={os.getgid()} "
-        f"groups={sorted(os.getgroups())}. Under Docker, run with --user set to an "
-        "id that can read the library, and --group-add for any supplementary group "
-        "it needs."
+        f"groups={sorted(os.getgroups())}. Under Docker, set --user to an id that "
+        "can read the library. Add --group-add for each supplementary group that "
+        "the id needs."
     )
 
 
@@ -207,31 +195,10 @@ def _env_float(env: Mapping[str, str], key: str, default: float, *, minimum: flo
     return parsed
 
 
-def _env_replacement(env: Mapping[str, str], key: str) -> str | None:
-    """Parse the FAT32 replacement string, where a false-word means "not FAT32".
-
-    Taken verbatim otherwise, so " - " stays a valid replacement alongside "_".
-    Returning None rather than pairing the string with a separate boolean keeps
-    "is the target FAT32" and "what does it get instead" as one answer.
-    """
-    value = env.get(key)
-    if value is None or not value.strip():
-        return DEFAULT_FAT32_REPLACEMENT
-    if value.strip().casefold() in _DISABLING_VALUES:
-        return None
-    illegal = ALWAYS_ILLEGAL_CHARS | FAT32_ILLEGAL_CHARS
-    offender = next((char for char in value if char in illegal), None)
-    if offender is not None:
-        raise ConfigError(
-            f"{key}={value!r} contains {offender!r}, which is itself illegal in a filename"
-        )
-    return value
-
-
-def _env_template(env: Mapping[str, str], key: str, replacement: str | None) -> PathTemplate:
+def _env_template(env: Mapping[str, str], key: str, fat32: bool) -> PathTemplate:
     text = _env_str(env, key, DEFAULT_PATH_TEMPLATE) or DEFAULT_PATH_TEMPLATE
     try:
-        return parse_template(text, replacement=replacement)
+        return parse_template(text, fat32=fat32)
     except TemplateError as error:
         raise ConfigError(f"{key}={text!r}: {error}") from None
 

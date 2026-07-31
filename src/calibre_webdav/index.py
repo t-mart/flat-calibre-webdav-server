@@ -256,7 +256,7 @@ def build_index(config: Config) -> LibraryIndex:
         (naming for naming, _ in resolved),
         config.path_template,
         max_length=config.max_filename_length,
-        replacement=config.fat32_replacement,
+        fat32=config.fat32,
     )
     paths = {book_id: "/".join(components) for book_id, components in assigned.items()}
 

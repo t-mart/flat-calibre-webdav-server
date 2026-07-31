@@ -1,70 +1,49 @@
 # calibre-webdav
 
-A read-only WebDAV server that exposes a Calibre library in whatever layout you
-describe with a path template. Backed by the real files on disk; nothing is
-copied or duplicated.
-
-```
-on disk:
-/path/to/calibre/library/
-  metadata.db
-  Frank Herbert/
-    Dune (54)/
-      Dune - Frank Herbert.epub
-    Dune Messiah (55)/
-      Dune Messiah - Frank Herbert.epub
-  Roberto Bolaño & Natasha Wimmer/
-    2666 (1)/
-      2666 - Roberto Bolaño.epub
-
-over WebDAV, with the default template:
-/
-  Herbert, Frank/
-    Dune/
-      01 - Dune.epub
-      02 - Dune Messiah.epub
-  Bolaño, Roberto & Wimmer, Natasha/
-    2666.epub
-```
+A read-only WebDAV server. It exposes a Calibre library in the layout that you
+describe with a path template. The server reads the real files on disk. It does
+not copy them and does not duplicate them.
 
 The intended client is [foldersync](https://github.com/t-mart/foldersync), a
-KOReader plugin that mirrors this collection into a local folder on a Kobo.
+KOReader plugin. Other clients may also find use though.
 
 ## The path template
 
-`CW_PATH_TEMPLATE` decides the whole shape of what is served. `/` separates
-path components, so the depth of the tree is yours to choose: a template with no
-`/` in it puts every book at the root.
+`CW_PATH_TEMPLATE` sets the shape of the served tree. A `/` character separates
+the path components, and you select the depth of the tree. A template without a
+`/` character puts every book at the root.
 
 ```
-{field}                  the field's value
-{field:|prefix|suffix}   prefix + value + suffix, or nothing at all when the
-                         field is empty
+{field}                  the value of the field
+{field:|prefix|suffix}   prefix + value + suffix, or nothing when the field is
+                         empty
 ```
 
-The second form is what makes one template cover books with and without a
-series. `{series:||/}` renders `Dune/` for a book in a series and nothing for a
-standalone one, so the series directory simply does not exist for books that
-have no series. The syntax is Calibre's own save-template shape.
+The second form covers books with a series and books without a series in one
+template. For a book in a series, `{series:||/}` renders `Dune/`. For a
+standalone book, it renders nothing, and the series directory does not exist.
+This syntax is the syntax of the Calibre save template.
 
 ### Fields
 
-| Field            | From                | Notes                                          |
-| ---------------- | ------------------- | ---------------------------------------------- |
-| `{author_sort}`  | `books.author_sort` | `Herbert, Brian & Anderson, Kevin J.`          |
-| `{title}`        | `books.title`       |                                                |
-| `{title_sort}`   | `books.sort`        | `Hobbit, The`; falls back to the title         |
-| `{series}`       | `series.name`       | Empty for a standalone book                    |
-| `{series_index}` | `books.series_index`| `01`, `02.5`; empty without a series           |
-| `{year}`         | `books.pubdate`     | Empty when the book has no publication date    |
-| `{id}`           | `books.id`          | Calibre's own id, unique by construction       |
-| `{ext}`          | `data.format`       | Lowercased. Required: a template without it is refused |
+| Field            | From                 | Notes                                               |
+| ---------------- | -------------------- | --------------------------------------------------- |
+| `{author_sort}`  | `books.author_sort`  | For example, `Herbert, Brian & Anderson, Kevin J.`  |
+| `{title}`        | `books.title`        |                                                     |
+| `{title_sort}`   | `books.sort`         | For example, `Hobbit, The`. Falls back to the title |
+| `{series}`       | `series.name`        | Empty for a standalone book                         |
+| `{series_index}` | `books.series_index` | For example, `01` or `02.5`. Empty without a series |
+| `{year}`         | `books.pubdate`      | Empty when the book has no publication date         |
+| `{id}`           | `books.id`           | The Calibre id. It is always unique                 |
+| `{ext}`          | `data.format`        | Lowercase. Each template must contain this field    |
 
 ### Examples
 
-Two books: *Dune Messiah* (Frank Herbert, book 2 of Dune, 1969) and *2666*
-(Roberto Bolaño, with the translator Natasha Wimmer as a second author, no
-series, 2004).
+These examples use two books:
+
+- _Dune Messiah_, by Frank Herbert, book 2 of the Dune series, 1969.
+- _2666_, by Roberto Bolaño, with the translator Natasha Wimmer as a second
+  author, no series, 2004.
 
 | Template                                                                    | Dune Messiah                                   | 2666                                                 |
 | --------------------------------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------------- |
@@ -74,108 +53,99 @@ series, 2004).
 | `{year:\|\|/}{title} - {author_sort}.{ext}`                                 | `1969/Dune Messiah - Herbert, Frank.epub`      | `2004/2666 - Bolaño, Roberto & Wimmer, Natasha.epub` |
 | `{title_sort}.{ext}`                                                        | `Dune Messiah.epub`                            | `2666.epub`                                          |
 
-The series index is zero-padded to two digits with a trailing `.0` dropped, so
-`1.0` becomes `01` and `2.5` becomes `02.5`. That makes a series sort into
-reading order lexicographically.
+The series index has two digits, with a zero as a prefix. A trailing `.0` is
+removed. Thus `1.0` becomes `01`, and `2.5` becomes `02.5`. A series then sorts
+into reading order.
 
-A flat template is worth considering for KOReader specifically: it shows cover
-thumbnails at whatever level you are browsing, so a single directory means a
-single page of covers to scroll. If that gets too long, search still works.
+The server checks the template at startup. The server refuses to start if the
+template has one of these faults:
 
-Templates are parsed and checked at startup. An unknown field, a missing
-`{ext}`, an unbalanced brace, a `..` component, or a character the target
-filesystem cannot take are all startup errors rather than surprises later.
+- an unknown field
+- no `{ext}` field
+- an unbalanced brace
+- a `..` path component
+- a character that the target filesystem refuses
 
-## Naming
+## Names
 
-Field values are sanitized before they are substituted into the template, which
-is what stops a title like `AC/DC` from inventing a path component. Two sets of
-characters are involved:
+The server sanitizes each field value before it puts the value into the
+template. A title such as `AC/DC` therefore cannot create a path component. Two
+sets of characters are relevant:
 
-- `/` and control characters are always replaced with `_`. This is not a
-  nicety; a `/` inside a value would split one component into two.
-- `: * ? " < > | \` are replaced only when the target is FAT32, which is what
-  the Kobo's internal storage uses. `CW_FAT32_REPLACEMENT` names the
-  replacement (`_` by default, Calibre's own convention, so `Dune: House
-  Atreides` becomes `Dune_ House Atreides`). Setting it to `false` turns this
-  off, along with the stripping of trailing dots and spaces that FAT32 also
-  requires. Note that leaving it on costs you the dot in `Salinger, J. D.`,
-  since FAT32 rejects a component ending in one.
+- The server always replaces `/` and the control characters with `_`. This rule
+  is necessary, because a `/` character in a value splits one component into two
+  components.
+- The server replaces `: * ? " < > | \` with `_` when `CW_FAT32` is `true`. This
+  rule is necessary because FAT32 refuses these characters.
+  `Dune: House Atreides` becomes `Dune_ House Atreides`. To stop this
+  replacement, set the variable to `false`. The variable also controls the
+  removal of the trailing dots and spaces that FAT32 refuses. If you keep the
+  FAT32 replacement, the name `Salinger, J. D.` loses the final dot.
 
-Non-ASCII is preserved exactly either way: `Bolaño, Roberto` survives intact.
+The server caps each path component at `CW_MAX_FILENAME_LENGTH` UTF-16 units. In
+the last component, the server keeps the extension and the id suffix, and
+truncates only the stem. This also is for FAT filesystems.
 
-Each path component is capped independently at `CW_MAX_FILENAME_LENGTH` UTF-16
-units. On the last one the extension and any id suffix are preserved and only
-the stem is truncated.
-
-Where two books would generate the same path, both get a ` (calibre_id)` suffix
-before the extension and everything else stays clean. Collisions are detected
-case-insensitively, because the destination filesystem may be: two names
-differing only in case are distinct over WebDAV but would clobber each other
-once mirrored.
+If two books get the same path, the server adds a ` (calibre_id)` suffix to both
+paths, before the extension. All other paths stay clean. The server compares the
+paths without case, because the destination filesystem can be case-insensitive.
+Two names that differ only in case are different over WebDAV. On the device,
+they replace each other.
 
 ## How it works
 
-`metadata.db` is the sole source of truth for both file location and naming. The
-library tree is never walked for discovery, and author and title are never
-parsed out of directory names, because Calibre's on-disk names are lossily
-sanitized: `Kernighan Brian W_` is really `Kernighan, Brian W.` and
-`Dune_ House Atreides` is really `Dune: House Atreides`.
+`metadata.db` is the only source for the location of a file and for its name.
+The server never walks the library tree for discovery. The server never reads
+the author and the title from the directory names. Calibre sanitizes its own
+names on disk, with a loss of information. For example, `Kernighan Brian W_` is
+really `Kernighan, Brian W.`, and `Dune_ House Atreides` is really
+`Dune: House Atreides`.
 
-The index is built once at startup from a single query and cached. It is
-invalidated by `metadata.db`'s mtime, so a book ingested by Calibre Web
-Automated appears within the debounce window with no restart. Rebuilds are
-atomic: a new index is built off to the side and the reference swapped, so a
-PROPFIND racing a rebuild sees either the old snapshot or the new one, never a
-half-built listing. A failed rebuild logs and leaves the previous index in
-place.
-
-The directory tree is derived from the rendered paths and held in memory
-alongside them, so a listing at any depth costs no filesystem work beyond
-stat'ing the books themselves. Requests resolve against that index and never
-against the filesystem, which is what makes path traversal a non-question.
-
-The database is opened strictly read-only (`mode=ro`), with a connection timeout
-and a bounded retry.
+The server holds the directory tree in memory together with the paths. A listing
+at any depth needs no work on the filesystem, except the stat of each book. All
+requests resolve against the index.
 
 ## Drift
 
-Calibre libraries drift and CWA ingests automatically, so this is handled rather
-than treated as an error:
+Calibre libraries drift from the filesystem. The server handles these four
+conditions. They are not errors:
 
-- A book with zero `data` rows is skipped silently.
-- A `data` row whose file is absent on disk is skipped with a WARN naming the
-  book id and the expected path. If a lower-preference format is present, it is
-  used instead.
-- A book with no format in the preference order is skipped with a WARN.
-- A book whose path is also a directory is skipped with a WARN. The directory
-  wins, since dropping it would take its contents with it.
+- A book has zero `data` rows. The server skips the book silently.
+- A `data` row points to a file that is absent from disk. The server skips the
+  row and writes a WARN message with the book id and the expected path. If a
+  format with a lower preference is present, the server uses that format.
+- A book has no format in the preference order. The server skips the book and
+  writes a WARN message.
+- The path of a book is also a directory. The server skips the book and writes a
+  WARN message. The directory stays, because a removal of the directory also
+  removes its contents.
 
-None of these are a 500 and none abort the index build. The skip count is
-reported at the end of every build so drift is visible rather than mysterious.
+No condition in this list causes a 500 response, and no condition stops the
+index build. The server reports the number of skipped books at the end of each
+build.
 
 ## Configuration
 
-Everything is an environment variable.
+Each option is an environment variable.
 
-| Variable                      | Default                                                      | Meaning                                                      |
-| ----------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| `CW_LIBRARY_ROOT`             | _required_                                                   | Calibre library root, the directory containing `metadata.db` |
-| `CW_USERNAME`                 | _required_                                                   | HTTP Basic username                                          |
-| `CW_PASSWORD`                 | _required_                                                   | HTTP Basic password                                          |
-| `CW_ALLOW_ANONYMOUS`          | `false`                                                      | Serve without authentication; makes the credentials optional |
-| `CW_HOST`                     | `0.0.0.0`                                                    | Bind address                                                 |
-| `CW_PORT`                     | `8080`                                                       | Bind port                                                    |
-| `CW_PATH_TEMPLATE`            | `{author_sort}/{series:\|\|/}{series_index:\|\| - }{title}.{ext}` | The served layout                                        |
-| `CW_FORMAT_PREFERENCE`        | `epub,pdf`                                                   | Format preference, most preferred first                      |
-| `CW_MAX_FILENAME_LENGTH`      | `200`                                                        | Per-component cap in UTF-16 units, under the FAT32 limit of 255 |
-| `CW_FAT32_REPLACEMENT`        | `_`                                                          | Replacement for FAT32-illegal characters, or `false` to leave them alone |
-| `CW_INDEX_DEBOUNCE_SECONDS`   | `5`                                                          | Minimum interval between freshness checks                    |
-| `CW_DB_TIMEOUT_SECONDS`       | `5`                                                          | SQLite busy timeout                                          |
-| `CW_DB_RETRY_ATTEMPTS`        | `3`                                                          | Retries when a writer holds the database                     |
-| `CW_VERBOSE`                  | `3`                                                          | 0 quiet, 3 info, 4+ debug with access logs                   |
+| Variable                    | Default                                                           | Meaning                                                            |
+| --------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `CW_LIBRARY_ROOT`           | _required_                                                        | The Calibre library root. This directory contains `metadata.db`    |
+| `CW_USERNAME`               | _required_                                                        | The user name for HTTP Basic authentication                        |
+| `CW_PASSWORD`               | _required_                                                        | The password for HTTP Basic authentication                         |
+| `CW_ALLOW_ANONYMOUS`        | `false`                                                           | Serve without authentication. The credentials become optional      |
+| `CW_HOST`                   | `0.0.0.0`                                                         | The bind address                                                   |
+| `CW_PORT`                   | `8080`                                                            | The bind port                                                      |
+| `CW_PATH_TEMPLATE`          | `{author_sort}/{series:\|\|/}{series_index:\|\| - }{title}.{ext}` | The layout of the served tree                                      |
+| `CW_FORMAT_PREFERENCE`      | `epub,pdf`                                                        | The format preference. The first format is the preferred one       |
+| `CW_MAX_FILENAME_LENGTH`    | `200`                                                             | The cap for one component, in UTF-16 units. The FAT32 limit is 255 |
+| `CW_FAT32`                  | `true`                                                            | Replace the characters that FAT32 refuses with `_`                 |
+| `CW_INDEX_DEBOUNCE_SECONDS` | `5`                                                               | The minimum interval between two freshness checks                  |
+| `CW_DB_TIMEOUT_SECONDS`     | `5`                                                               | The busy timeout for SQLite                                        |
+| `CW_DB_RETRY_ATTEMPTS`      | `3`                                                               | The number of retries when a writer holds the database             |
+| `CW_VERBOSE`                | `3`                                                               | 0 is quiet. 3 is info. 4 and more add debug and access logs        |
 
-## Running
+## How to run the server
 
 ```shell
 docker build --tag calibre-webdav:latest .
@@ -183,59 +153,38 @@ docker build --tag calibre-webdav:latest .
 docker run --detach --name calibre-webdav --publish 8080:8080 --restart unless-stopped --user 1000:1000 --volume /my/ebooks:/library:ro --env CW_USERNAME=someuser --env CW_PASSWORD=somepassword calibre-webdav:latest
 ```
 
-Pushes to `master` publish the image to the Forgejo instance's container
-registry (see
-[.forgejo/workflows/publish-docker-image.yml](.forgejo/workflows/publish-docker-image.yml)),
-so the build step can be skipped in favor of pulling
-`<forgejo-host>/<owner>/calibre-webdav:latest`. Each push also
-leaves behind an immutable tag of the short commit hash.
+Each push to `master` publishes the image to the container registry of the
+Forgejo instance. See
+[.forgejo/workflows/publish-docker-image.yml](.forgejo/workflows/publish-docker-image.yml).
+You can then pull `<forgejo-host>/<owner>/calibre-webdav:latest`, and the build
+step is not necessary. Each push also creates an immutable tag with the short
+commit hash.
 
-Mount the library `:ro` so read-only access is enforced by the filesystem and
-not merely in code.
+Mount the library with `:ro`. The filesystem then enforces the read-only access,
+and not only the code.
 
-Set `--user` to an id that can read the library, adding `--group-add` if it
-needs a supplementary group. Any id works, including one with no `/etc/passwd`
-entry; the image defaults to `1000:1000` and never runs as root. If the id
-cannot read the library the server refuses to start and names the uid, gid, and
-groups it had.
+Set `--user` to an id that can read the library. Add `--group-add` for a
+supplementary group. Any id works, and the id does not need an entry in
+`/etc/passwd`. The image uses `1000:1000` by default and never runs as root.
 
 ## Security
 
-There is deliberately **no TLS support** in this server. It is designed to run
-behind a reverse proxy (Caddy) that terminates TLS and obtains certificates.
-
-Authentication is HTTP Basic, which sends credentials base64-encoded, i.e. in
-the clear. Therefore, **this should be run only on trusted networks and/or
-behind TLS-terminating reverse proxies.**
-
-The server must be mounted at a host root, not a subpath: it generates absolute
-hrefs rooted at `/`.
-
-Only a subset of WebDAV server verbs are implemented, which keeps the server
-read-only against the filesystem. `PUT`, `DELETE`, `MKCOL`, `MOVE`, `COPY`,
-`LOCK`, `UNLOCK` and `PROPPATCH` all return 405. The database is never written,
-never vacuumed, and never write-locked.
+**Do not run this server on an untrusted network without TLS.** Authentication
+is HTTP Basic. HTTP Basic sends the credentials with base64 encoding, which is
+clear text. Run the server behind a reverse proxy such as Caddy.
 
 ## WebDAV surface
 
-Only what a mirroring client actually uses is implemented:
+The server implements only the methods that a mirror client uses:
 
-- `OPTIONS` advertising `DAV: 1`
-- `PROPFIND` at `Depth: 0`, `Depth: 1` and `Depth: infinity`. Infinity is
-  answered rather than refused, because the tree is already in memory; an
-  absent `Depth` header means infinity, per RFC 4918.
+- `OPTIONS`, which advertises `DAV: 1`
+- `PROPFIND` at `Depth: 0`, `Depth: 1` and `Depth: infinity`
 - `GET` and `HEAD`, with `Range` and `Accept-Ranges`
 
-Properties on files: `resourcetype` (empty), `getcontentlength`,
-`getlastmodified`, `getetag`, `getcontenttype`, `displayname`, `creationdate`.
-Collections carry `resourcetype`, `displayname` and `getlastmodified` only; they
-exist in the index rather than on disk, so their last-modified is
-`metadata.db`'s. `allprop`, `propname` and named `prop` requests are all
-handled, and unknown properties come back in a 404 propstat.
-
-`getetag` is derived from the real file on disk (an `mtime-size` digest), never
-from database fields, and PROPFIND and GET are locked to the same value. No
-client is required to use it, but one that does will not be lied to.
+The server implements only a subset of the WebDAV methods, and is therefore
+read-only against the filesystem. `PUT`, `DELETE`, `MKCOL`, `MOVE`, `COPY`,
+`LOCK`, `UNLOCK` and `PROPPATCH` return 405. The server never writes to the
+database, never vacuums it, and never takes a write lock.
 
 ## Development
 
@@ -245,14 +194,22 @@ uv run pytest
 uv run ruff format src tests; uv run ruff check src tests; uv run ty check src tests
 ```
 
-Tests build a small synthetic Calibre library rather than touching the real one,
-covering colons in titles, a `.`-terminated author, a non-ASCII author, a book
-with zero `data` rows, a `data` row whose file is missing, colliding paths, a
-book that collides with a directory, a >200-character title, a `.5` series
-index, an author with both series and standalone books, and the flat template
-alongside the default one.
+The tests build a small synthetic Calibre library and never touch the real one.
+They cover these cases:
 
-To exercise it against a real client:
+- a colon in a title
+- an author name that ends with a dot
+- a non-ASCII author name
+- a book with zero `data` rows
+- a `data` row whose file is absent
+- two paths that collide
+- a book that collides with a directory
+- a title with more than 200 characters
+- a `.5` series index
+- an author with series books and standalone books
+- the flat template and the default template
+
+To test the server against a real client, use rclone:
 
 ```nu
 $env.RCLONE_CONFIG_CW_TYPE = "webdav"
@@ -265,12 +222,12 @@ rclone lsf cw: --recursive
 rclone sync cw: /tmp/mirror --dry-run
 ```
 
-`rclone sync --dry-run` exercises the same mirror semantics a syncing client
-implements. Two dry-runs in a row should plan no changes the second time.
+`rclone sync --dry-run` uses the same mirror semantics as a sync client. Run the
+dry run two times. The second run must plan no changes.
 
 ## Companion project
 
-The client is a separate KOReader plugin called
-[foldersync](https://github.com/t-mart/foldersync). It mirrors whatever tree it
-is pointed at, so there is no shared naming contract to keep in step: change the
-template here and the plugin follows without knowing anything changed.
+The client is a separate KOReader plugin:
+[foldersync](https://github.com/t-mart/foldersync). The plugin mirrors the tree
+that it receives. There is no shared contract for the names. If you change the
+template here, the plugin follows the change and needs no update.

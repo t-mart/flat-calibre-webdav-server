@@ -76,16 +76,16 @@ class TestParsing:
         with pytest.raises(ConfigError, match="not an integer"):
             config(CW_PORT="http")
 
-    def test_replacement_must_itself_be_legal(self):
-        with pytest.raises(ConfigError, match="illegal"):
-            config(CW_FAT32_REPLACEMENT="/")
-
-    def test_replacement_preserves_significant_whitespace(self):
-        assert config(CW_FAT32_REPLACEMENT=" - ").fat32_replacement == " - "
+    def test_fat32_handling_is_on_by_default(self):
+        assert config().fat32 is True
 
     @pytest.mark.parametrize("value", ["false", "FALSE", "no", "off", "0"])
     def test_fat32_handling_can_be_turned_off(self, value):
-        assert config(CW_FAT32_REPLACEMENT=value).fat32_replacement is None
+        assert config(CW_FAT32=value).fat32 is False
+
+    def test_a_non_boolean_fat32_value_is_rejected(self):
+        with pytest.raises(ConfigError, match="not a boolean"):
+            config(CW_FAT32="_")
 
     def test_password_whitespace_is_preserved(self):
         assert config(CW_PASSWORD=" spaced ").password == " spaced "
@@ -109,7 +109,7 @@ class TestPathTemplate:
 
     def test_the_same_template_is_accepted_once_fat32_is_off(self):
         assert config(
-            CW_PATH_TEMPLATE="{author_sort}: {title}.{ext}", CW_FAT32_REPLACEMENT="false"
+            CW_PATH_TEMPLATE="{author_sort}: {title}.{ext}", CW_FAT32="false"
         ).path_template
 
 

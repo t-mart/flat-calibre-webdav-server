@@ -43,12 +43,12 @@ def naming(
     )
 
 
-def path_of(template: str = DEFAULT_PATH_TEMPLATE, *, replacement="_", **overrides) -> str:
+def path_of(template: str = DEFAULT_PATH_TEMPLATE, *, fat32=True, **overrides) -> str:
     components = render_path(
         naming(**overrides),
-        parse_template(template, replacement=replacement),
+        parse_template(template, fat32=fat32),
         max_length=MAX,
-        replacement=replacement,
+        fat32=fat32,
     )
     return "/".join(components)
 
@@ -96,23 +96,20 @@ class TestSanitize:
     def test_whitespace_is_collapsed_and_trimmed(self):
         assert sanitize_component("  a   b  ") == "a b"
 
-    def test_respects_custom_replacement(self):
-        assert sanitize_component("Dune: House", " - ") == "Dune - House"
-
     def test_a_bare_dot_value_cannot_name_a_directory(self):
         assert sanitize_component("..") == "__"
 
 
 class TestSanitizeWithoutFat32:
     def test_fat32_only_characters_survive(self):
-        assert sanitize_component("Dune: House Atreides", None) == "Dune: House Atreides"
+        assert sanitize_component("Dune: House Atreides", False) == "Dune: House Atreides"
 
     def test_separator_is_still_replaced(self):
         # Not a FAT32 nicety: `/` would invent a path component.
-        assert sanitize_component("AC/DC", None) == "AC_DC"
+        assert sanitize_component("AC/DC", False) == "AC_DC"
 
     def test_control_characters_are_still_replaced(self):
-        assert sanitize_component("a\x00b", None) == "a_b"
+        assert sanitize_component("a\x00b", False) == "a_b"
 
 
 class TestUtf16:
@@ -154,7 +151,7 @@ class TestParseTemplate:
             parse_template("{author_sort}: {title}.{ext}")
 
     def test_fat32_illegal_literal_is_allowed_when_fat32_is_off(self):
-        assert parse_template("{author_sort}: {title}.{ext}", replacement=None)
+        assert parse_template("{author_sort}: {title}.{ext}", fat32=False)
 
 
 class TestRenderPath:
@@ -210,9 +207,7 @@ class TestRenderPath:
         assert path_of(author_sort="Salinger, J. D.") == "Salinger, J. D/Dune.epub"
 
     def test_a_trailing_dot_survives_when_fat32_is_off(self):
-        assert path_of(author_sort="Salinger, J. D.", replacement=None) == (
-            "Salinger, J. D./Dune.epub"
-        )
+        assert path_of(author_sort="Salinger, J. D.", fat32=False) == ("Salinger, J. D./Dune.epub")
 
     def test_long_title_is_truncated_to_the_cap(self):
         components = path_of(title="T" + "o" * 400).split("/")
