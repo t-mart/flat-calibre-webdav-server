@@ -11,6 +11,10 @@ from calibre_webdav.config import ConfigError
 DAV = "DAV:"
 AUTH = ("user", "pass")
 
+# The protocol tests need collections to walk, which the default template, being
+# flat, never creates.
+NESTED = "{author_sort}/{series:||/}{series_index:|| - }{title}.{ext}"
+
 
 def qname(local: str) -> str:
     return f"{{{DAV}}}{local}"
@@ -21,7 +25,8 @@ def client(library):
     library.add_book("Dune", "Herbert, Frank", series="Dune", series_index=1.0)
     library.add_book("Dune: House Atreides", "Herbert, Brian")
     library.add_book("2666", "Bolaño, Roberto", content=b"a" * 5000)
-    with TestClient(create_app(library.config()), backend_options={}) as test_client:
+    config = library.config(template=NESTED)
+    with TestClient(create_app(config), backend_options={}) as test_client:
         yield test_client
 
 
@@ -120,8 +125,8 @@ class TestPropfindRoot:
         assert response.status_code == 207
         assert response.headers["content-type"].startswith("application/xml")
         found = responses(response.content)
-        # The root itself plus one collection per author, and no books: the
-        # default template puts every book at least one level down.
+        # The root itself plus one collection per author, and no books: this
+        # template puts every book at least one level down.
         assert set(found) == {
             "/",
             "/Herbert%2C%20Frank/",
@@ -169,10 +174,9 @@ class TestPropfindRoot:
     def test_content_type_is_epub(self, client):
         assert prop_text(books(client)[a_book(client)], "getcontenttype") == "application/epub+zip"
 
-    def test_a_flat_template_serves_books_from_the_root(self, library):
+    def test_the_default_template_serves_books_from_the_root(self, library):
         library.add_book("Dune", "Herbert, Frank")
-        flat = "{author_sort} - {title}.{ext}"
-        with TestClient(create_app(library.config(template=flat))) as flat_client:
+        with TestClient(create_app(library.config())) as flat_client:
             found = responses(propfind(flat_client, depth="1").content)
         assert set(found) == {"/", "/Herbert%2C%20Frank%20-%20Dune.epub"}
 

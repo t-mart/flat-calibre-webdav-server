@@ -215,7 +215,7 @@ def render_path(
 ) -> tuple[str, ...]:
     """Render one book to its relative path, as a tuple of path components.
 
-    Components that render empty are dropped, which is how an optional series
+    Components that render empty are dropped, which is how an optional
     directory collapses. Each surviving component is capped independently at
     `max_length`; on the last one the extension and the collision-disambiguating
     id suffix are preserved and only the stem is truncated.

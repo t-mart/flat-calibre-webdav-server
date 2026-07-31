@@ -19,10 +19,10 @@ the path components, and you select the depth of the tree. A template without a
                          empty
 ```
 
-The second form covers books with a series and books without a series in one
-template. For a book in a series, `{series:||/}` renders `Dune/`. For a
-standalone book, it renders nothing, and the series directory does not exist.
-This syntax is the syntax of the Calibre save template.
+The second form covers the fields that a book can leave empty. For a book with a
+publication date, `{year:||/}` renders `1969/`. For a book without one, the
+whole group renders nothing, and that directory does not exist. This syntax is
+the syntax of the Calibre save template.
 
 ### Fields
 
@@ -32,7 +32,7 @@ This syntax is the syntax of the Calibre save template.
 | `{title}`        | `books.title`        |                                                     |
 | `{title_sort}`   | `books.sort`         | For example, `Hobbit, The`. Falls back to the title |
 | `{series}`       | `series.name`        | Empty for a standalone book                         |
-| `{series_index}` | `books.series_index` | For example, `01` or `02.5`. Empty without a series |
+| `{series_index}` | `books.series_index` | Two digits, so `1.0` is `01` and `2.5` is `02.5`    |
 | `{year}`         | `books.pubdate`      | Empty when the book has no publication date         |
 | `{id}`           | `books.id`           | The Calibre id. It is always unique                 |
 | `{ext}`          | `data.format`        | Lowercase. Each template must contain this field    |
@@ -45,17 +45,16 @@ These examples use two books:
 - _2666_, by Roberto Bolaño, with the translator Natasha Wimmer as a second
   author, no series, 2004.
 
-| Template                                                                    | Dune Messiah                                   | 2666                                                 |
-| --------------------------------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------------- |
-| `{author_sort}/{series:\|\|/}{series_index:\|\| - }{title}.{ext}` (default) | `Herbert, Frank/Dune/02 - Dune Messiah.epub`   | `Bolaño, Roberto & Wimmer, Natasha/2666.epub`        |
-| `{author_sort} - {series:\|\| }{series_index:\|\| - }{title}.{ext}` (flat)  | `Herbert, Frank - Dune 02 - Dune Messiah.epub` | `Bolaño, Roberto & Wimmer, Natasha - 2666.epub`      |
-| `{author_sort}/{title}.{ext}`                                               | `Herbert, Frank/Dune Messiah.epub`             | `Bolaño, Roberto & Wimmer, Natasha/2666.epub`        |
-| `{year:\|\|/}{title} - {author_sort}.{ext}`                                 | `1969/Dune Messiah - Herbert, Frank.epub`      | `2004/2666 - Bolaño, Roberto & Wimmer, Natasha.epub` |
-| `{title_sort}.{ext}`                                                        | `Dune Messiah.epub`                            | `2666.epub`                                          |
+| Template                                                                   | Dune Messiah                                 | 2666                                                 |
+| -------------------------------------------------------------------------- | -------------------------------------------- | ---------------------------------------------------- |
+| `{author_sort} - {title}.{ext}` (default)                                  | `Herbert, Frank - Dune Messiah.epub`         | `Bolaño, Roberto & Wimmer, Natasha - 2666.epub`      |
+| `{title_sort}.{ext}`                                                       | `Dune Messiah.epub`                          | `2666.epub`                                          |
+| `{author_sort}/{title}.{ext}`                                              | `Herbert, Frank/Dune Messiah.epub`           | `Bolaño, Roberto & Wimmer, Natasha/2666.epub`        |
+| `{year:\|\|/}{title} - {author_sort}.{ext}`                                | `1969/Dune Messiah - Herbert, Frank.epub`    | `2004/2666 - Bolaño, Roberto & Wimmer, Natasha.epub` |
+| `{author_sort}/{series:\|\|/}{series_index:\|\| - }{title}.{ext}`          | `Herbert, Frank/Dune/02 - Dune Messiah.epub` | `Bolaño, Roberto & Wimmer, Natasha/2666.epub`        |
 
-The series index has two digits, with a zero as a prefix. A trailing `.0` is
-removed. Thus `1.0` becomes `01`, and `2.5` becomes `02.5`. A series then sorts
-into reading order.
+The last template puts a series in its own directory, in reading order. A book
+without a series lands beside those directories.
 
 The server checks the template at startup. The server refuses to start if the
 template has one of these faults:
@@ -136,7 +135,7 @@ Each option is an environment variable.
 | `CW_ALLOW_ANONYMOUS`        | `false`                                                           | Serve without authentication. The credentials become optional      |
 | `CW_HOST`                   | `0.0.0.0`                                                         | The bind address                                                   |
 | `CW_PORT`                   | `8080`                                                            | The bind port                                                      |
-| `CW_PATH_TEMPLATE`          | `{author_sort}/{series:\|\|/}{series_index:\|\| - }{title}.{ext}` | The layout of the served tree                                      |
+| `CW_PATH_TEMPLATE`          | `{author_sort} - {title}.{ext}`                                   | The layout of the served tree                                      |
 | `CW_FORMAT_PREFERENCE`      | `epub,pdf`                                                        | The format preference. The first format is the preferred one       |
 | `CW_MAX_FILENAME_LENGTH`    | `200`                                                             | The cap for one component, in UTF-16 units. The FAT32 limit is 255 |
 | `CW_FAT32`                  | `true`                                                            | Replace the characters that FAT32 refuses with `_`                 |
@@ -205,9 +204,7 @@ They cover these cases:
 - two paths that collide
 - a book that collides with a directory
 - a title with more than 200 characters
-- a `.5` series index
-- an author with series books and standalone books
-- the flat template and the default template
+- the default template and a template with directories
 
 To test the server against a real client, use rclone:
 

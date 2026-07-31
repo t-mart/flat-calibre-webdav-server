@@ -17,7 +17,7 @@ from calibre_webdav.naming import (
 
 MAX = 200
 
-FLAT = "{author_sort} - {series:|| }{series_index:|| - }{title}.{ext}"
+NESTED = "{author_sort}/{series:||/}{series_index:|| - }{title}.{ext}"
 
 
 def naming(
@@ -155,30 +155,22 @@ class TestParseTemplate:
 
 
 class TestRenderPath:
-    def test_default_template_nests_by_author(self):
-        assert path_of() == "Herbert, Frank/Dune.epub"
+    def test_default_template_serves_from_the_root(self):
+        assert path_of() == "Herbert, Frank - Dune.epub"
 
-    def test_default_template_nests_a_series(self):
-        assert path_of(title="Dune Messiah", series="Dune", series_index=2.0) == (
+    def test_a_template_with_separators_nests(self):
+        assert path_of(NESTED, title="Dune Messiah", series="Dune", series_index=2.0) == (
             "Herbert, Frank/Dune/02 - Dune Messiah.epub"
         )
 
     def test_half_index_in_series(self):
-        assert path_of(title="Interlude", series="Saga", series_index=2.5) == (
+        assert path_of(NESTED, title="Interlude", series="Saga", series_index=2.5) == (
             "Herbert, Frank/Saga/02.5 - Interlude.epub"
         )
 
     def test_series_index_is_dropped_without_a_series(self):
         # Calibre defaults every standalone book to index 1.0.
-        assert path_of(series_index=1.0) == "Herbert, Frank/Dune.epub"
-
-    def test_flat_template_still_works(self):
-        assert path_of(FLAT, title="Dune Messiah", series="Dune", series_index=2.0) == (
-            "Herbert, Frank - Dune 02 - Dune Messiah.epub"
-        )
-
-    def test_flat_template_without_a_series(self):
-        assert path_of(FLAT) == "Herbert, Frank - Dune.epub"
+        assert path_of(NESTED, series_index=1.0) == "Herbert, Frank/Dune.epub"
 
     def test_year_field(self):
         assert path_of("{year}/{title}.{ext}", year=1965) == "1965/Dune.epub"
@@ -194,20 +186,22 @@ class TestRenderPath:
         assert path_of("{id} - {title}.{ext}", book_id=42) == "42 - Dune.epub"
 
     def test_colon_in_a_value_is_sanitized(self):
-        assert path_of(title="Dune: House Atreides") == "Herbert, Frank/Dune_ House Atreides.epub"
+        assert path_of(title="Dune: House Atreides") == "Herbert, Frank - Dune_ House Atreides.epub"
 
     def test_a_value_cannot_invent_a_path_component(self):
-        assert path_of(title="A/B") == "Herbert, Frank/A_B.epub"
+        assert path_of(title="A/B") == "Herbert, Frank - A_B.epub"
 
     def test_empty_components_collapse(self):
         assert path_of("{series:||/}{title}.{ext}") == "Dune.epub"
 
     def test_a_component_never_ends_in_a_dot(self):
         # FAT32 refuses the write, so the author's trailing initial dot goes.
-        assert path_of(author_sort="Salinger, J. D.") == "Salinger, J. D/Dune.epub"
+        assert path_of(NESTED, author_sort="Salinger, J. D.") == "Salinger, J. D/Dune.epub"
 
     def test_a_trailing_dot_survives_when_fat32_is_off(self):
-        assert path_of(author_sort="Salinger, J. D.", fat32=False) == ("Salinger, J. D./Dune.epub")
+        assert path_of(NESTED, author_sort="Salinger, J. D.", fat32=False) == (
+            "Salinger, J. D./Dune.epub"
+        )
 
     def test_long_title_is_truncated_to_the_cap(self):
         components = path_of(title="T" + "o" * 400).split("/")
@@ -215,11 +209,11 @@ class TestRenderPath:
         assert components[-1].endswith(".epub")
 
     def test_every_component_is_capped_independently(self):
-        components = path_of(author_sort="A" * 400, title="T" * 400).split("/")
+        components = path_of(NESTED, author_sort="A" * 400, title="T" * 400).split("/")
         assert [utf16_length(component) for component in components] == [MAX, MAX]
 
-    def test_truncation_preserves_the_series_prefix_and_extension(self):
-        rendered = path_of(title="T" + "o" * 400, series="Saga", series_index=2.5)
+    def test_truncation_preserves_the_prefix_and_extension(self):
+        rendered = path_of(NESTED, title="T" + "o" * 400, series="Saga", series_index=2.5)
         name = rendered.rpartition("/")[2]
         assert name.startswith("02.5 - ")
         assert name.endswith(".epub")
@@ -232,8 +226,8 @@ class TestAssignPaths:
 
     def test_non_colliding_paths_stay_clean(self):
         assigned = self.paths([naming(book_id=1), naming(book_id=2, title="Dune Messiah")])
-        assert assigned[1] == "Herbert, Frank/Dune.epub"
-        assert assigned[2] == "Herbert, Frank/Dune Messiah.epub"
+        assert assigned[1] == "Herbert, Frank - Dune.epub"
+        assert assigned[2] == "Herbert, Frank - Dune Messiah.epub"
 
     def test_only_colliding_paths_get_an_id_suffix(self):
         books = [
@@ -242,9 +236,9 @@ class TestAssignPaths:
             naming(book_id=3, title="Unique"),
         ]
         assigned = self.paths(books)
-        assert assigned[1] == "Herbert, Frank/Dune (1).epub"
-        assert assigned[2] == "Herbert, Frank/Dune (2).epub"
-        assert assigned[3] == "Herbert, Frank/Unique.epub"
+        assert assigned[1] == "Herbert, Frank - Dune (1).epub"
+        assert assigned[2] == "Herbert, Frank - Dune (2).epub"
+        assert assigned[3] == "Herbert, Frank - Unique.epub"
 
     def test_collisions_are_detected_case_insensitively(self):
         # Distinct over WebDAV, but the same file on a Kobo's FAT32 storage.
@@ -258,8 +252,8 @@ class TestAssignPaths:
             naming(book_id=2, author_sort="Bolaño, Roberto"),
         ]
         assigned = self.paths(books)
-        assert assigned[1] == "Herbert, Frank/Dune.epub"
-        assert assigned[2] == "Bolaño, Roberto/Dune.epub"
+        assert assigned[1] == "Herbert, Frank - Dune.epub"
+        assert assigned[2] == "Bolaño, Roberto - Dune.epub"
 
     def test_titles_colliding_only_after_truncation_are_disambiguated(self):
         long_title = "Same " + "x" * 400

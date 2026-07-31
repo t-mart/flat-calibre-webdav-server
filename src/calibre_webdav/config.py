@@ -17,10 +17,9 @@ from .naming import PathTemplate, TemplateError, parse_template
 
 DEFAULT_FORMAT_PREFERENCE = ("epub", "pdf")
 
-# One directory per author, one per series, the series index leading the title so
-# a series sorts into reading order. Standalone books land beside the series
-# directories because the whole `{series...}` group renders empty without one.
-DEFAULT_PATH_TEMPLATE = "{author_sort}/{series:||/}{series_index:|| - }{title}.{ext}"
+# Every book at the root of the served tree, in one file. The author leads so
+# that a listing sorts by author, and a template with a `/` is one edit away.
+DEFAULT_PATH_TEMPLATE = "{author_sort} - {title}.{ext}"
 
 # FAT32 long filenames cap at 255 UTF-16 units. We stay well under it: KOReader
 # writes a `<stem>.sdr` sidecar directory next to each book and puts its own

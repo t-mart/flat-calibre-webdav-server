@@ -9,7 +9,7 @@ import pytest
 
 from calibre_webdav.index import IndexCache, build_index, database_signature
 
-FLAT = "{author_sort} - {series:|| }{series_index:|| - }{title}.{ext}"
+NESTED = "{author_sort}/{series:||/}{series_index:|| - }{title}.{ext}"
 
 
 class TestDiscovery:
@@ -18,14 +18,14 @@ class TestDiscovery:
         library.add_book("2666", "Bolaño, Roberto")
         index = build_index(library.config())
         assert set(index.paths()) == {
-            "Herbert, Frank/Dune.epub",
-            "Bolaño, Roberto/2666.epub",
+            "Herbert, Frank - Dune.epub",
+            "Bolaño, Roberto - 2666.epub",
         }
 
     def test_entries_point_at_real_files(self, library):
         library.add_book("Dune", "Herbert, Frank", content=b"dune bytes")
         index = build_index(library.config())
-        entry = index.get("Herbert, Frank/Dune.epub")
+        entry = index.get("Herbert, Frank - Dune.epub")
         assert entry is not None
         assert entry.real_path.read_bytes() == b"dune bytes"
 
@@ -33,18 +33,7 @@ class TestDiscovery:
         library.add_book("Dune", "Herbert, Frank")
         (library.root / "stray.epub").write_bytes(b"not in the database")
         index = build_index(library.config())
-        assert index.paths() == ["Herbert, Frank/Dune.epub"]
-
-    def test_series_and_standalone_books_coexist(self, library):
-        library.add_book("Hatchet", "Paulsen, Gary", series="Brian's Saga", series_index=1.0)
-        library.add_book("Interlude", "Paulsen, Gary", series="Brian's Saga", series_index=2.5)
-        library.add_book("Standalone", "Paulsen, Gary")
-        index = build_index(library.config())
-        assert index.paths() == [
-            "Paulsen, Gary/Brian's Saga/01 - Hatchet.epub",
-            "Paulsen, Gary/Brian's Saga/02.5 - Interlude.epub",
-            "Paulsen, Gary/Standalone.epub",
-        ]
+        assert index.paths() == ["Herbert, Frank - Dune.epub"]
 
     def test_live_index_cannot_be_mutated(self, library):
         # A rebuild swaps in a new snapshot; nothing may edit the live one.
@@ -57,11 +46,22 @@ class TestDiscovery:
 
 
 class TestTemplate:
-    def test_a_flat_template_serves_everything_from_the_root(self, library):
-        library.add_book("Dune", "Herbert, Frank", series="Dune", series_index=1.0)
-        index = build_index(library.config(template=FLAT))
-        assert index.paths() == ["Herbert, Frank - Dune 01 - Dune.epub"]
-        assert index.children("") == ("Herbert, Frank - Dune 01 - Dune.epub",)
+    def test_the_default_template_serves_everything_from_the_root(self, library):
+        library.add_book("Dune", "Herbert, Frank")
+        index = build_index(library.config())
+        assert index.paths() == ["Herbert, Frank - Dune.epub"]
+        assert index.children("") == ("Herbert, Frank - Dune.epub",)
+
+    def test_a_nested_template_builds_directories(self, library):
+        library.add_book("Hatchet", "Paulsen, Gary", series="Brian's Saga", series_index=1.0)
+        library.add_book("Interlude", "Paulsen, Gary", series="Brian's Saga", series_index=2.5)
+        library.add_book("Standalone", "Paulsen, Gary")
+        index = build_index(library.config(template=NESTED))
+        assert index.paths() == [
+            "Paulsen, Gary/Brian's Saga/01 - Hatchet.epub",
+            "Paulsen, Gary/Brian's Saga/02.5 - Interlude.epub",
+            "Paulsen, Gary/Standalone.epub",
+        ]
 
     def test_year_comes_from_pubdate(self, library):
         library.add_book("Dune", "Herbert, Frank", year=1965)
@@ -83,7 +83,7 @@ class TestTree:
     def test_directories_are_derived_from_the_paths(self, library):
         library.add_book("Hatchet", "Paulsen, Gary", series="Brian's Saga")
         library.add_book("Dune", "Herbert, Frank")
-        index = build_index(library.config())
+        index = build_index(library.config(template=NESTED))
         assert index.is_collection("")
         assert index.is_collection("Paulsen, Gary")
         assert index.is_collection("Paulsen, Gary/Brian's Saga")
@@ -92,7 +92,7 @@ class TestTree:
     def test_children_are_the_immediate_members_only(self, library):
         library.add_book("Hatchet", "Paulsen, Gary", series="Brian's Saga")
         library.add_book("Standalone", "Paulsen, Gary")
-        index = build_index(library.config())
+        index = build_index(library.config(template=NESTED))
         assert index.children("") == ("Paulsen, Gary",)
         assert index.children("Paulsen, Gary") == (
             "Paulsen, Gary/Brian's Saga",
@@ -111,7 +111,7 @@ class TestTree:
         library.add_book("Sequel", "Herbert, Frank", series="Dune.epub", series_index=1.0)
         library.add_book("Dune", "Herbert, Frank", path="elsewhere")
         with caplog.at_level(logging.WARNING):
-            index = build_index(library.config())
+            index = build_index(library.config(template=NESTED))
         assert index.paths() == ["Herbert, Frank/Dune.epub/01 - Sequel.epub"]
         assert index.skipped == 1
         assert "is also a directory" in caplog.text
@@ -123,7 +123,7 @@ class TestDrift:
         library.add_book_without_formats("Phantom", "Nobody, A")
         with caplog.at_level(logging.WARNING):
             index = build_index(library.config())
-        assert index.paths() == ["Herbert, Frank/Dune.epub"]
+        assert index.paths() == ["Herbert, Frank - Dune.epub"]
         assert not caplog.records
 
     def test_missing_file_is_skipped_with_a_warning(self, library, caplog):
@@ -131,7 +131,7 @@ class TestDrift:
         library.add_book("Ghost", "Missing, M", create_files=())
         with caplog.at_level(logging.WARNING):
             index = build_index(library.config())
-        assert index.paths() == ["Herbert, Frank/Dune.epub"]
+        assert index.paths() == ["Herbert, Frank - Dune.epub"]
         assert index.skipped == 1
         assert "missing on disk" in caplog.text
         assert "Ghost" in caplog.text
@@ -154,19 +154,19 @@ class TestFormatPreference:
     def test_multi_format_book_appears_once_as_the_preferred_format(self, library):
         library.add_book("Dune", "Herbert, Frank", formats=("EPUB", "PDF"))
         index = build_index(library.config())
-        assert index.paths() == ["Herbert, Frank/Dune.epub"]
+        assert index.paths() == ["Herbert, Frank - Dune.epub"]
 
     def test_preference_order_is_configurable(self, library):
         library.add_book("Dune", "Herbert, Frank", formats=("EPUB", "PDF"))
         index = build_index(library.config(format_preference=("pdf", "epub")))
-        assert index.paths() == ["Herbert, Frank/Dune.pdf"]
+        assert index.paths() == ["Herbert, Frank - Dune.pdf"]
 
     def test_falls_through_when_the_preferred_file_is_missing(self, library, caplog):
         # The EPUB is listed in the database but only the PDF is on disk.
         library.add_book("Dune", "Herbert, Frank", formats=("EPUB", "PDF"), create_files=("PDF",))
         with caplog.at_level(logging.WARNING):
             index = build_index(library.config())
-        assert index.paths() == ["Herbert, Frank/Dune.pdf"]
+        assert index.paths() == ["Herbert, Frank - Dune.pdf"]
         assert "missing on disk" in caplog.text
 
     def test_book_with_no_preferred_format_is_skipped_with_a_warning(self, library, caplog):
@@ -184,8 +184,8 @@ class TestCollisions:
         second = library.add_book("Dune", "Herbert, Frank", path="b")
         index = build_index(library.config())
         assert index.paths() == [
-            f"Herbert, Frank/Dune ({first}).epub",
-            f"Herbert, Frank/Dune ({second}).epub",
+            f"Herbert, Frank - Dune ({first}).epub",
+            f"Herbert, Frank - Dune ({second}).epub",
         ]
 
     def test_non_colliding_books_stay_clean(self, library):
@@ -193,8 +193,8 @@ class TestCollisions:
         library.add_book("Dune Messiah", "Herbert, Frank", path="b")
         index = build_index(library.config())
         assert index.paths() == [
-            "Herbert, Frank/Dune Messiah.epub",
-            "Herbert, Frank/Dune.epub",
+            "Herbert, Frank - Dune Messiah.epub",
+            "Herbert, Frank - Dune.epub",
         ]
 
 
