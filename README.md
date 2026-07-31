@@ -7,6 +7,32 @@ not copy them and does not duplicate them.
 The intended client is [foldersync](https://github.com/t-mart/foldersync), a
 KOReader plugin. Other clients may also find use though.
 
+## Docker Compose
+
+```yaml
+# compose.yaml
+services:
+  calibre-webdav:
+    image: tmmrtn/calibre-webdav:latest
+    restart: unless-stopped
+    # An id that can read the library on the host.
+    user: "1000:1000"
+    ports:
+      - "8080:8080"
+    volumes:
+      # Read-only, so that the filesystem enforces the access, and not only the
+      # code. The container expects the library at /library.
+      - /my/ebooks:/library:ro
+    environment:
+      CW_USERNAME: someuser
+      CW_PASSWORD: somepassword
+      # Every other variable is optional. See the table below.
+      CW_PATH_TEMPLATE: "{author_sort} - {title}.{ext}"
+```
+
+Each push to `master` publishes the image to Docker Hub as
+`tmmrtn/calibre-webdav:latest`.
+
 ## The path template
 
 `CW_PATH_TEMPLATE` sets the shape of the served tree. A `/` character separates
@@ -45,13 +71,13 @@ These examples use two books:
 - _2666_, by Roberto Bolaño, with the translator Natasha Wimmer as a second
   author, no series, 2004.
 
-| Template                                                                   | Dune Messiah                                 | 2666                                                 |
-| -------------------------------------------------------------------------- | -------------------------------------------- | ---------------------------------------------------- |
-| `{author_sort} - {title}.{ext}` (default)                                  | `Herbert, Frank - Dune Messiah.epub`         | `Bolaño, Roberto & Wimmer, Natasha - 2666.epub`      |
-| `{title_sort}.{ext}`                                                       | `Dune Messiah.epub`                          | `2666.epub`                                          |
-| `{author_sort}/{title}.{ext}`                                              | `Herbert, Frank/Dune Messiah.epub`           | `Bolaño, Roberto & Wimmer, Natasha/2666.epub`        |
-| `{year:\|\|/}{title} - {author_sort}.{ext}`                                | `1969/Dune Messiah - Herbert, Frank.epub`    | `2004/2666 - Bolaño, Roberto & Wimmer, Natasha.epub` |
-| `{author_sort}/{series:\|\|/}{series_index:\|\| - }{title}.{ext}`          | `Herbert, Frank/Dune/02 - Dune Messiah.epub` | `Bolaño, Roberto & Wimmer, Natasha/2666.epub`        |
+| Template                                                          | Dune Messiah                                 | 2666                                                 |
+| ----------------------------------------------------------------- | -------------------------------------------- | ---------------------------------------------------- |
+| `{author_sort} - {title}.{ext}` (default)                         | `Herbert, Frank - Dune Messiah.epub`         | `Bolaño, Roberto & Wimmer, Natasha - 2666.epub`      |
+| `{title_sort}.{ext}`                                              | `Dune Messiah.epub`                          | `2666.epub`                                          |
+| `{author_sort}/{title}.{ext}`                                     | `Herbert, Frank/Dune Messiah.epub`           | `Bolaño, Roberto & Wimmer, Natasha/2666.epub`        |
+| `{year:\|\|/}{title} - {author_sort}.{ext}`                       | `1969/Dune Messiah - Herbert, Frank.epub`    | `2004/2666 - Bolaño, Roberto & Wimmer, Natasha.epub` |
+| `{author_sort}/{series:\|\|/}{series_index:\|\| - }{title}.{ext}` | `Herbert, Frank/Dune/02 - Dune Messiah.epub` | `Bolaño, Roberto & Wimmer, Natasha/2666.epub`        |
 
 The last template puts a series in its own directory, in reading order. A book
 without a series lands beside those directories.
@@ -127,44 +153,22 @@ build.
 
 Each option is an environment variable.
 
-| Variable                    | Default                                                           | Meaning                                                            |
-| --------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `CW_LIBRARY_ROOT`           | _required_                                                        | The Calibre library root. This directory contains `metadata.db`    |
-| `CW_USERNAME`               | _required_                                                        | The user name for HTTP Basic authentication                        |
-| `CW_PASSWORD`               | _required_                                                        | The password for HTTP Basic authentication                         |
-| `CW_ALLOW_ANONYMOUS`        | `false`                                                           | Serve without authentication. The credentials become optional      |
-| `CW_HOST`                   | `0.0.0.0`                                                         | The bind address                                                   |
-| `CW_PORT`                   | `8080`                                                            | The bind port                                                      |
-| `CW_PATH_TEMPLATE`          | `{author_sort} - {title}.{ext}`                                   | The layout of the served tree                                      |
-| `CW_FORMAT_PREFERENCE`      | `epub,pdf`                                                        | The format preference. The first format is the preferred one       |
-| `CW_MAX_FILENAME_LENGTH`    | `200`                                                             | The cap for one component, in UTF-16 units. The FAT32 limit is 255 |
-| `CW_FAT32`                  | `true`                                                            | Replace the characters that FAT32 refuses with `_`                 |
-| `CW_INDEX_DEBOUNCE_SECONDS` | `5`                                                               | The minimum interval between two freshness checks                  |
-| `CW_DB_TIMEOUT_SECONDS`     | `5`                                                               | The busy timeout for SQLite                                        |
-| `CW_DB_RETRY_ATTEMPTS`      | `3`                                                               | The number of retries when a writer holds the database             |
-| `CW_VERBOSE`                | `3`                                                               | 0 is quiet. 3 is info. 4 and more add debug and access logs        |
-
-## How to run the server
-
-```shell
-docker build --tag calibre-webdav:latest .
-
-docker run --detach --name calibre-webdav --publish 8080:8080 --restart unless-stopped --user 1000:1000 --volume /my/ebooks:/library:ro --env CW_USERNAME=someuser --env CW_PASSWORD=somepassword calibre-webdav:latest
-```
-
-Each push to `master` publishes the image to the container registry of the
-Forgejo instance. See
-[.forgejo/workflows/publish-docker-image.yml](.forgejo/workflows/publish-docker-image.yml).
-You can then pull `<forgejo-host>/<owner>/calibre-webdav:latest`, and the build
-step is not necessary. Each push also creates an immutable tag with the short
-commit hash.
-
-Mount the library with `:ro`. The filesystem then enforces the read-only access,
-and not only the code.
-
-Set `--user` to an id that can read the library. Add `--group-add` for a
-supplementary group. Any id works, and the id does not need an entry in
-`/etc/passwd`. The image uses `1000:1000` by default and never runs as root.
+| Variable                    | Default                         | Meaning                                                            |
+| --------------------------- | ------------------------------- | ------------------------------------------------------------------ |
+| `CW_LIBRARY_ROOT`           | _required_                      | The Calibre library root. This directory contains `metadata.db`    |
+| `CW_USERNAME`               | _required_                      | The user name for HTTP Basic authentication                        |
+| `CW_PASSWORD`               | _required_                      | The password for HTTP Basic authentication                         |
+| `CW_ALLOW_ANONYMOUS`        | `false`                         | Serve without authentication. The credentials become optional      |
+| `CW_HOST`                   | `0.0.0.0`                       | The bind address                                                   |
+| `CW_PORT`                   | `8080`                          | The bind port                                                      |
+| `CW_PATH_TEMPLATE`          | `{author_sort} - {title}.{ext}` | The layout of the served tree                                      |
+| `CW_FORMAT_PREFERENCE`      | `epub,pdf`                      | The format preference. The first format is the preferred one       |
+| `CW_MAX_FILENAME_LENGTH`    | `200`                           | The cap for one component, in UTF-16 units. The FAT32 limit is 255 |
+| `CW_FAT32`                  | `true`                          | Replace the characters that FAT32 refuses with `_`                 |
+| `CW_INDEX_DEBOUNCE_SECONDS` | `5`                             | The minimum interval between two freshness checks                  |
+| `CW_DB_TIMEOUT_SECONDS`     | `5`                             | The busy timeout for SQLite                                        |
+| `CW_DB_RETRY_ATTEMPTS`      | `3`                             | The number of retries when a writer holds the database             |
+| `CW_VERBOSE`                | `3`                             | 0 is quiet. 3 is info. 4 and more add debug and access logs        |
 
 ## Security
 
